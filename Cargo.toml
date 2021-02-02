@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+    "r86-prom",
+    "r86-asm",
+    "r86-sim"
+]
