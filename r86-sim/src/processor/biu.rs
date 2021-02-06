@@ -1,19 +1,14 @@
+// TODO: remove after implementation
+#![allow(dead_code)]
+
 pub mod adder;
 pub mod queue;
 
-use std::sync::Arc;
-
-use tokio::sync::{mpsc, Mutex, MutexGuard};
+use tokio::sync::{mpsc};
 
 use crate::bus::*;
 use self::adder::{Adder, AdderCommand};
 use self::queue::InstructionQueue;
-
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub enum Signal {
-    Low,
-    High
-}
 
 struct BIURegisterFile {
     pub cs: u16,
@@ -43,16 +38,15 @@ impl BIURegisterFile {
 pub struct BusInterfaceUnit {
     bus_b: Bus16,
     bus_c: Bus20,
-    bus_alu: Bus16,
+    bus_alu: BusSocket<u16, u16>,
     adder: Adder,
     adder_command: mpsc::Sender<AdderCommand>,
     register_file: BIURegisterFile
 }
 impl BusInterfaceUnit {
-    pub fn new() -> Self {
+    pub fn new(bus_alu: BusSocket<u16, u16>) -> Self {
         let bus_b = Bus16::new();
         let bus_c = Bus20::new();
-        let bus_alu = Bus16::new();
         let (adder_command, command) = mpsc::channel(1);
         let adder = Adder::new(command, bus_b.socket(), bus_c.socket_high16());
         let register_file = BIURegisterFile::new();

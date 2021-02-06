@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc};
 use tokio::task;
 use tokio::task::JoinHandle;
 
@@ -70,7 +68,7 @@ mod test {
     use tokio::sync::Mutex;
     use tokio::time;
 
-    use crate::biu::adder::{Adder, AdderCommand};
+    use crate::processor::biu::adder::{Adder, AdderCommand};
     use crate::bus::{Bus16, Bus20, Bus};
 
     #[tokio::test]

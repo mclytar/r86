@@ -79,7 +79,7 @@ impl DerefMut for InstructionQueue {
 
 #[cfg(test)]
 mod tests {
-    use crate::biu::queue::InstructionQueue;
+    use crate::processor::biu::queue::InstructionQueue;
 
     #[test]
     fn test_queue() {
