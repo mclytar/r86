@@ -1,13 +1,12 @@
-// TODO: remove after implementation
-#![allow(dead_code)]
-
 pub mod adder;
 pub mod queue;
 
-use tokio::sync::{mpsc};
+use std::sync::Arc;
+
+use tokio::sync::{Mutex};
 
 use crate::bus::*;
-use self::adder::{Adder, AdderCommand};
+use self::adder::{Adder, AdderControl};
 use self::queue::InstructionQueue;
 
 struct BIURegisterFile {
@@ -35,28 +34,64 @@ impl BIURegisterFile {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub enum AdderBusB {
+    ALU,
+    RegFile
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub enum AdderBusC {
+    ALU,
+    ALUOut,
+    RegFile,
+    RegFileLo4,
+    Out,
+    OutHi4
+}
+
 pub struct BusInterfaceUnit {
-    bus_b: Bus16,
-    bus_c: Bus20,
-    bus_alu: BusSocket<u16, u16>,
+    bus_b: Bus<u16, Socket16, AdderBusB>,
+    bus_c: Bus<u16, Socket20, AdderBusC>,
+    reg_b: Arc<Mutex<u16>>,
+    reg_c: Arc<Mutex<u16>>,
+    reg_c_lo4: Arc<Mutex<u16>>,
+    //bus_alu: BusSocket<u16, u16>,
     adder: Adder,
-    adder_command: mpsc::Sender<AdderCommand>,
-    register_file: BIURegisterFile
+    adder_ctrl: Arc<Mutex<AdderControl>>,
+    register_file: BIURegisterFile,
+    //ctrl: ???
 }
 impl BusInterfaceUnit {
-    pub fn new(bus_alu: BusSocket<u16, u16>) -> Self {
-        let bus_b = Bus16::new();
-        let bus_c = Bus20::new();
-        let (adder_command, command) = mpsc::channel(1);
-        let adder = Adder::new(command, bus_b.socket(), bus_c.socket_high16());
+    pub fn new() -> Self {
+        // Create buses.
+        let mut bus_b = Bus::new();
+        let mut bus_c = Bus::new();
+        // Create bus connections.
+        let reg_b = Arc::new(Mutex::new(0));
+        let reg_c = Arc::new(Mutex::new(0));
+        let reg_c_lo4 = Arc::new(Mutex::new(0));
+        // Create adder.
+        let adder = Adder::new();
+        let adder_ctrl = adder.control_line();
+        // Plug components into buses.
+        bus_b.plug(AdderBusB::ALU, adder.socket_b());
+        bus_b.plug(AdderBusB::RegFile, Socket16::new(reg_b.clone()));
+        bus_c.plug(AdderBusC::ALU, adder.socket_c());
+        bus_c.plug(AdderBusC::RegFile, Socket20::new_high(reg_c.clone()));
+        bus_c.plug(AdderBusC::RegFileLo4, Socket20::new_low_nibble(reg_c_lo4.clone()));
+        // Create register file.
         let register_file = BIURegisterFile::new();
 
         BusInterfaceUnit {
             bus_b,
             bus_c,
-            bus_alu,
+            reg_b,
+            reg_c,
+            reg_c_lo4,
+            //bus_alu,
             adder,
-            adder_command,
+            adder_ctrl,
             register_file
         }
     }

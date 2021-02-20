@@ -5,11 +5,15 @@ pub type SimulationResult<T> = std::result::Result<T, SimulationError>;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SimulationErrorKind {
+    BusRaceCondition,
+    BusEmpty,
     InstructionQueueFull
 }
 impl SimulationErrorKind {
     pub(self) fn as_str(&self) -> &'static str {
         match *self {
+            SimulationErrorKind::BusRaceCondition => "bus race condition",
+            SimulationErrorKind::BusEmpty => "bus empty",
             SimulationErrorKind::InstructionQueueFull => "instruction queue full"
         }
     }

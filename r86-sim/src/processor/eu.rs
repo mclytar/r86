@@ -1,6 +1,3 @@
-// TODO: remove after implementation
-#![allow(dead_code)]
-
 pub mod alu;
 pub mod microcode;
 
@@ -34,6 +31,6 @@ impl EURegisterFile {
 }
 
 pub struct ExecutionUnit {
-    bus_alu: Bus16,
-    register_file: EURegisterFile
+    register_file: EURegisterFile,
+    //ctrl: ???
 }

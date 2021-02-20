@@ -1,60 +1,64 @@
-use tokio::sync::{mpsc};
-use tokio::task;
-use tokio::task::JoinHandle;
+use std::sync::Arc;
+
+use tokio::sync::{Mutex};
 
 use crate::bus::*;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-pub enum AdderCommand {
-    Idle,
-    LoadFromBus,
-    LoadFromMux(i16),
-    Output
+pub enum AdderControl {
+    MuxM6 = -6,
+    MuxM5,
+    MuxM4,
+    MuxM3,
+    MuxM2,
+    MuxM1,
+    Bus,
+    MuxP1,
+    MuxP2,
+    MuxP3,
+    MuxP4,
+    MuxP5,
+    MuxP6
 }
 
 pub struct Adder {
-    command: mpsc::Receiver<AdderCommand>,
-    bus_b: BusSocket<u16, u16>,
-    bus_c: BusSocket<u32, u16>,
+    tmp_b: Arc<Mutex<u16>>,
+    tmp_c: Arc<Mutex<u16>>,
+    tmp_out: Arc<Mutex<u16>>,
+    ctrl: Arc<Mutex<AdderControl>>
 }
 impl Adder {
-    pub fn new(command: mpsc::Receiver<AdderCommand>, bus_b: BusSocket<u16, u16>, bus_c: BusSocket<u32, u16>) -> Self {
+    pub fn new() -> Self {
         Adder {
-            command,
-            bus_b,
-            bus_c
+            tmp_b: Arc::new(Mutex::new(0)),
+            tmp_c: Arc::new(Mutex::new(0)),
+            tmp_out: Arc::new(Mutex::new(0)),
+            ctrl: Arc::new(Mutex::new(AdderControl::Bus))
         }
     }
 
-    pub fn run(self) -> JoinHandle<()> {
-        task::spawn(async move {
-            let mut command = self.command;
-            let bus_b = self.bus_b;
-            let bus_c = self.bus_c;
+    pub fn socket_b(&self) -> Socket16 {
+        Socket16::new(self.tmp_b.clone())
+    }
 
-            let mut tmp_b: u16 = 0;
-            let mut tmp_c: u16 = 0;
-            let mut tmp_out: u16 = 0;
+    pub fn socket_c(&self) -> Socket20 {
+        Socket20::new_high(self.tmp_c.clone())
+    }
 
-            while let Some(command) = command.recv().await {
-                match command {
-                    AdderCommand::Idle => {},
-                    AdderCommand::LoadFromBus => {
-                        tmp_b = bus_b.read().await;
-                        tmp_c = bus_c.read().await;
-                    },
-                    AdderCommand::LoadFromMux(val) => {
-                        tmp_b = bus_b.read().await;
-                        tmp_c = val as u16;
-                    },
-                    AdderCommand::Output => {
-                        bus_c.write(tmp_out).await;
-                    }
-                }
+    pub fn socket_out(&self) -> Socket20 {
+        Socket20::new_high(self.tmp_out.clone())
+    }
 
-                tmp_out = tmp_b.overflowing_add(tmp_c).0;
-            }
-        })
+    pub fn control_line(&self) -> Arc<Mutex<AdderControl>> {
+        self.ctrl.clone()
+    }
+
+    pub async fn clock(&self) {
+        let value = match *self.ctrl.lock().await {
+            AdderControl::Bus => *self.tmp_c.lock().await,
+            mux => mux as u16
+        };
+        *self.tmp_out.lock().await = value.overflowing_add(*self.tmp_b.lock().await).0;
     }
 }
 
@@ -64,126 +68,179 @@ impl Adder {
 mod test {
     use std::sync::Arc;
 
-    use tokio::sync::{mpsc};
     use tokio::sync::Mutex;
-    use tokio::time;
 
-    use crate::processor::biu::adder::{Adder, AdderCommand};
-    use crate::bus::{Bus16, Bus20, Bus};
+    use crate::processor::biu::{AdderBusB, AdderBusC};
+    use crate::processor::biu::adder::{Adder, AdderControl};
+    use crate::bus::{Bus, Socket20, Socket16};
 
-    #[tokio::test]
-    async fn compose_address() {
-        let bus_b = Bus16::new();
-        let bus_c = Bus20::new();
-        let (tx, rx) = mpsc::channel(1);
-        let adder = Adder::new(rx, bus_b.socket(), bus_c.socket_high16());
-        let handle = adder.run();
+    struct Setup {
+        pub adder: Adder,
+        pub bus_b: Bus<u16, Socket16, AdderBusB>,
+        pub bus_c: Bus<u16, Socket20, AdderBusC>,
+        pub reg_b: Arc<Mutex<u16>>,
+        pub reg_c: Arc<Mutex<u16>>,
+        pub reg_c_lo4: Arc<Mutex<u16>>,
+        pub out_c: Arc<Mutex<u16>>,
+        pub out_c_hi4: Arc<Mutex<u16>>
+    }
+    impl Setup {
+        pub fn new() -> Self {
+            let adder = Adder::new();
+            let mut bus_b = Bus::new();
+            let mut bus_c = Bus::new();
 
-        let soc_b = bus_b.socket();
-        let soc_c = bus_c.socket();
+            let reg_b = Arc::new(Mutex::new(0));
+            let reg_c = Arc::new(Mutex::new(0));
+            let reg_c_lo4 = Arc::new(Mutex::new(0));
+            let out_c = Arc::new(Mutex::new(0));
+            let out_c_hi4 = Arc::new(Mutex::new(0));
 
-        soc_b.write(0xB800).await;
-        soc_c.write(0x00004).await;
-        tx.send(AdderCommand::LoadFromBus).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
+            bus_b.plug(AdderBusB::ALU, adder.socket_b());
+            bus_b.plug(AdderBusB::RegFile, Socket16::new(reg_b.clone()));
 
-        tx.send(AdderCommand::Output).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
-        assert_eq!(soc_c.read().await, 0xB8004);
+            bus_c.plug(AdderBusC::ALU, adder.socket_c());
+            bus_c.plug(AdderBusC::ALUOut, adder.socket_out());
+            bus_c.plug(AdderBusC::RegFile, Socket20::new_high(reg_c.clone()));
+            bus_c.plug(AdderBusC::RegFileLo4, Socket20::new_low_nibble(reg_c_lo4.clone()));
+            bus_c.plug(AdderBusC::Out, Socket20::new_low(out_c.clone()));
+            bus_c.plug(AdderBusC::OutHi4, Socket20::new_high_nibble(out_c_hi4.clone()));
 
-        std::mem::drop(tx);
-        handle.await.unwrap();
+            Setup {
+                adder,
+                bus_b,
+                bus_c,
+                reg_b,
+                reg_c,
+                reg_c_lo4,
+                out_c,
+                out_c_hi4
+            }
+        }
     }
 
     #[tokio::test]
-    async fn increment_instruction_pointer() {
-        let bus_b = Bus16::new();
-        let bus_c = Bus20::new();
-        let (tx, rx) = mpsc::channel(1);
-        let adder = Adder::new(rx, bus_b.socket(), bus_c.socket_high16());
-        let handle = adder.run();
+    async fn adder_output() {
+        let mut setup = Setup::new();
 
-        let soc_b = bus_b.socket();
-        let soc_c = bus_c.socket_high16();
+        *setup.reg_b.lock().await = 0x1234;
+        *setup.reg_c.lock().await = 0x5678;
+        *setup.reg_c_lo4.lock().await = 0x9ABC;
 
-        soc_b.write(0x0100).await;
-        tx.send(AdderCommand::LoadFromMux(2)).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
-
-        tx.send(AdderCommand::Output).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
-        assert_eq!(soc_c.read().await, 0x0102);
-
-        std::mem::drop(tx);
-        handle.await.unwrap();
+        setup.bus_b[AdderBusB::ALU].input();
+        setup.bus_b[AdderBusB::RegFile].output();
+        setup.bus_c[AdderBusC::ALU].input();
+        setup.bus_c[AdderBusC::RegFile].output();
+        setup.bus_c[AdderBusC::RegFileLo4].output();
+        setup.bus_c[AdderBusC::Out].input();
+        setup.bus_c[AdderBusC::OutHi4].input();
+        setup.bus_b.clock().await.unwrap();
+        setup.bus_c.clock().await.unwrap();
+        setup.adder.clock().await;
+        assert_eq!(*setup.out_c.lock().await, 0x678C);
+        assert_eq!(*setup.out_c_hi4.lock().await, 0x5);
     }
 
     #[tokio::test]
-    async fn decrement_instruction_pointer() {
-        let bus_b = Bus16::new();
-        let bus_c = Bus20::new();
-        let (tx, rx) = mpsc::channel(1);
-        let adder = Adder::new(rx, bus_b.socket(), bus_c.socket_high16());
-        let handle = adder.run();
+    async fn adder_sum() {
+        let mut setup = Setup::new();
 
-        let soc_b = bus_b.socket();
-        let soc_c = bus_c.socket_high16();
+        *setup.reg_b.lock().await = 0x1234;
+        *setup.reg_c.lock().await = 0x5678;
+        *setup.reg_c_lo4.lock().await = 0x9ABC;
 
-        soc_b.write(0x0100).await;
-        tx.send(AdderCommand::LoadFromMux(-2)).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
+        setup.bus_b[AdderBusB::ALU].input();
+        setup.bus_b[AdderBusB::RegFile].output();
+        setup.bus_c[AdderBusC::ALU].input();
+        setup.bus_c[AdderBusC::RegFile].output();
+        setup.bus_c[AdderBusC::RegFileLo4].output();
+        setup.bus_c[AdderBusC::Out].input();
+        setup.bus_c[AdderBusC::OutHi4].input();
+        setup.bus_b.clock().await.unwrap();
+        setup.bus_c.clock().await.unwrap();
+        setup.adder.clock().await;
 
-        tx.send(AdderCommand::Output).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
-        assert_eq!(soc_c.read().await, 0x00FE);
-
-        std::mem::drop(tx);
-        handle.await.unwrap();
+        setup.bus_c.close_all();
+        setup.bus_c[AdderBusC::ALUOut].output();
+        setup.bus_c[AdderBusC::RegFile].input();
+        setup.adder.clock().await;
+        setup.bus_c.clock().await.unwrap();
+        assert_eq!(*setup.reg_c.lock().await, 0x68AC);
     }
 
     #[tokio::test]
-    async fn overflow_increment_instruction_pointer() {
-        let bus_b = Bus16::new();
-        let bus_c = Bus20::new();
-        let (tx, rx) = mpsc::channel(1);
-        let adder = Adder::new(rx, bus_b.socket(), bus_c.socket_high16());
-        let handle = adder.run();
+    async fn adder_inc() {
+        let mut setup = Setup::new();
 
-        let soc_b = bus_b.socket();
-        let soc_c = bus_c.socket_high16();
+        *setup.reg_b.lock().await = 0x7C00;
 
-        soc_b.write(0xFFFE).await;
-        tx.send(AdderCommand::LoadFromMux(4)).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
+        setup.bus_b[AdderBusB::ALU].input();
+        setup.bus_b[AdderBusB::RegFile].output();
+        setup.bus_c[AdderBusC::ALUOut].output();
+        setup.bus_c[AdderBusC::RegFile].input();
 
-        tx.send(AdderCommand::Output).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
-        assert_eq!(soc_c.read().await, 0x0002);
+        *setup.adder.control_line().lock().await = AdderControl::MuxP2;
+        setup.bus_b.clock().await.unwrap();
+        setup.adder.clock().await;
+        setup.bus_c.clock().await.unwrap();
 
-        std::mem::drop(tx);
-        handle.await.unwrap();
+        assert_eq!(*setup.reg_c.lock().await, 0x7C02);
     }
 
     #[tokio::test]
-    async fn overflow_decrement_instruction_pointer() {
-        let bus_b = Bus16::new();
-        let bus_c = Bus20::new();
-        let (tx, rx) = mpsc::channel(1);
-        let adder = Adder::new(rx, bus_b.socket(), bus_c.socket_high16());
-        let handle = adder.run();
+    async fn adder_dec() {
+        let mut setup = Setup::new();
 
-        let soc_b = bus_b.socket();
-        let soc_c = bus_c.socket_high16();
+        *setup.reg_b.lock().await = 0x7C00;
 
-        soc_b.write(0x0002).await;
-        tx.send(AdderCommand::LoadFromMux(-4)).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
+        setup.bus_b[AdderBusB::ALU].input();
+        setup.bus_b[AdderBusB::RegFile].output();
+        setup.bus_c[AdderBusC::ALUOut].output();
+        setup.bus_c[AdderBusC::RegFile].input();
 
-        tx.send(AdderCommand::Output).await.unwrap();
-        time::sleep(time::Duration::from_millis(1)).await;
-        assert_eq!(soc_c.read().await, 0xFFFE);
+        *setup.adder.control_line().lock().await = AdderControl::MuxM2;
+        setup.bus_b.clock().await.unwrap();
+        setup.adder.clock().await;
+        setup.bus_c.clock().await.unwrap();
 
-        std::mem::drop(tx);
-        handle.await.unwrap();
+        assert_eq!(*setup.reg_c.lock().await, 0x7BFE);
+    }
+
+    #[tokio::test]
+    async fn adder_inc_overflow() {
+        let mut setup = Setup::new();
+
+        *setup.reg_b.lock().await = 0xFFFE;
+
+        setup.bus_b[AdderBusB::ALU].input();
+        setup.bus_b[AdderBusB::RegFile].output();
+        setup.bus_c[AdderBusC::ALUOut].output();
+        setup.bus_c[AdderBusC::RegFile].input();
+
+        *setup.adder.control_line().lock().await = AdderControl::MuxP4;
+        setup.bus_b.clock().await.unwrap();
+        setup.adder.clock().await;
+        setup.bus_c.clock().await.unwrap();
+
+        assert_eq!(*setup.reg_c.lock().await, 0x0002);
+    }
+
+    #[tokio::test]
+    async fn adder_dec_overflow() {
+        let mut setup = Setup::new();
+
+        *setup.reg_b.lock().await = 0x0002;
+
+        setup.bus_b[AdderBusB::ALU].input();
+        setup.bus_b[AdderBusB::RegFile].output();
+        setup.bus_c[AdderBusC::ALUOut].output();
+        setup.bus_c[AdderBusC::RegFile].input();
+
+        *setup.adder.control_line().lock().await = AdderControl::MuxM4;
+        setup.bus_b.clock().await.unwrap();
+        setup.adder.clock().await;
+        setup.bus_c.clock().await.unwrap();
+
+        assert_eq!(*setup.reg_c.lock().await, 0xFFFE);
     }
 }
