@@ -1,16 +1,8 @@
-pub mod expression;
-
-use std::str::FromStr;
-
-use crate::error::{error, CompilerResult, CompilerError};
-use crate::token::{Token, TokenClass};
-use crate::{INSTRUCTION, PREFIX_INSTRUCTION, PSEUDO_INSTRUCTION};
-use expression::Expression;
-
+#[macro_export]
 macro_rules! syntax_error {
-    ($stream:ident[$n:literal], $lt:literal, ref $(,$expr:expr)*) => {
+    ($stream:ident[$n:literal], $lt:literal, $($expr1:expr,)* ref $(,$expr2:expr)*) => {
         error::syntax_error(
-            format!($lt, $stream[$n].as_ref() $(,$expr)*),
+            format!($lt, $($expr1,)* $stream[$n].as_ref() $(,$expr2)*),
             $stream[$n].line(),
             $stream[$n].column(),
             $stream[$n].len()
@@ -24,7 +16,36 @@ macro_rules! syntax_error {
             $stream[$n].len()
         )
     };
+    ($stream:ident[$n:literal] was $old_stream:ident, $lt:literal, $($expr1:expr,)* ref $(,$expr2:expr)*) => {{
+        let err = error::syntax_error(
+            format!($lt, $($expr1,)* $stream[$n].as_ref() $(,$expr2)*),
+            $stream[$n].line(),
+            $stream[$n].column(),
+            $stream[$n].len()
+        );
+        *$stream = $old_stream;
+        err
+    }};
+    ($stream:ident[$n:literal] was $old_stream:ident, $lt:literal $(,$expr:expr)*) => {{
+        let err = error::syntax_error(
+            format!($lt $(,$expr)*),
+            $stream[$n].line(),
+            $stream[$n].column(),
+            $stream[$n].len()
+        );
+        *$stream = $old_stream;
+        err
+    }};
 }
+
+pub mod expression;
+
+use std::str::FromStr;
+
+use crate::error::{error, CompilerResult, CompilerError};
+use crate::token::{Token, TokenClass};
+use crate::{INSTRUCTION, PREFIX_INSTRUCTION, PSEUDO_INSTRUCTION};
+use expression::Expression;
 
 macro_rules! is_instruction {
     ($token:expr) => {
@@ -279,16 +300,7 @@ impl<'a> Quantifier<'a> {
                 *stream = &stream[1..];
                 let expression = match Expression::try_accept_critical(stream) {
                     Ok(Some(expr)) => expr,
-                    Ok(None) => {
-                        let err = error::syntax_error(
-                            format!("expected expression, found `{}`", stream[0].as_ref()),
-                            stream[0].line(),
-                            stream[0].column(),
-                            stream[0].len()
-                        );
-                        *stream = stream_slice_preserve;
-                        return Err(err);
-                    },
+                    Ok(None) => return Err(syntax_error!(stream[0] was stream_slice_preserve, "expected expression, found `{}`", ref)),
                     Err(e) => {
                         *stream = stream_slice_preserve;
                         return Err(e);
@@ -331,27 +343,12 @@ impl<'a> PrefixInstruction<'a> {
             },
             [TokenClass::Ident, ..]
             => {
-                if INSTRUCTION.iter().any(|s| *s == stream[0].as_ref())
-                    || PSEUDO_INSTRUCTION.iter().any(|s| *s == stream[0].as_ref()) {
+                if is_instruction!(stream[0], - PREFIX) {
                     return Ok(None);
                 }
-                let err = error::syntax_error(
-                    format!("expected instruction, found `{}`", stream[0].as_ref()),
-                    stream[0].line(),
-                    stream[0].column(),
-                    stream[0].len()
-                );
-                Err(err)
+                Err(syntax_error!(stream[0], "expected instruction, found `{}`", ref))
             }
-            _ => {
-                let err = error::syntax_error(
-                    format!("expected instruction, found `{}`", stream[0].as_ref()),
-                    stream[0].line(),
-                    stream[0].column(),
-                    stream[0].len()
-                );
-                Err(err)
-            }
+            _ => Err(syntax_error!(stream[0], "expected instruction, found `{}`", ref))
         }
     }
 }
@@ -398,41 +395,15 @@ impl<'a> Operand<'a> {
         match &classes[..] {
             [] => Ok(None),
             [TokenClass::EndOfLine, ..] => Ok(None),
-            [TokenClass::LeftSquareParen, TokenClass::RegSegment, TokenClass::Colon] => {
-                let segment_override = Some(stream[1].clone());
-                *stream = &stream[3..];
-                let expression = expect_expr(stream)?;
-                let classes: Vec<_> = stream.iter().map(|t| t.class()).take(2).collect();
-                match &classes[..] {
-                    [TokenClass::RightSquareParen, TokenClass::EndOfLine] => *stream = &stream[1..],
-                    [TokenClass::RightSquareParen, TokenClass::Comma] => *stream = &stream[2..],
-                    [] => {
-                        *stream = stream_slice_preserve;
-                        let err = error::syntax_error(
-                            format!("expected `]`, found end of file"),
-                            stream[stream.len() - 1].line(),
-                            stream[stream.len() - 1].column() + stream[stream.len() - 1].len(),
-                            1
-                        );
-                        return Err(err);
-                    },
-                    _ => {
-                        let err = error::syntax_error(
-                            format!("expected `]`, found `{}`", stream[0].as_ref()),
-                            stream[0].line(),
-                            stream[0].column(),
-                            stream[0].len()
-                        );
-                        *stream = stream_slice_preserve;
-                        return Err(err);
-                    }
-                }
-                let operand = Operand { size, address: true, segment_override, expression };
-                Ok(Some(operand))
-            },
             [TokenClass::LeftSquareParen, ..] => {
-                let segment_override = None;
-                *stream = &stream[1..];
+                let segment_override = if &classes[1..] == [TokenClass::RegSegment, TokenClass::Colon] {
+                    let token = stream[1].clone();
+                    *stream = &stream[3..];
+                    Some(token)
+                } else {
+                    *stream = &stream[1..];
+                    None
+                };
                 let expression = expect_expr(stream)?;
                 let classes: Vec<_> = stream.iter().map(|t| t.class()).take(2).collect();
                 match &classes[..] {
@@ -448,16 +419,7 @@ impl<'a> Operand<'a> {
                         );
                         return Err(err);
                     },
-                    _ => {
-                        let err = error::syntax_error(
-                            format!("expected `]`, found `{}`", stream[0].as_ref()),
-                            stream[0].line(),
-                            stream[0].column(),
-                            stream[0].len()
-                        );
-                        *stream = stream_slice_preserve;
-                        return Err(err);
-                    }
+                    _ => return Err(syntax_error!(stream[0] was stream_slice_preserve, "expected `]`, found `{}`", ref))
                 }
                 if stream.len() > 0 && stream[0].class() == TokenClass::Comma {
                     *stream = &stream[1..];
@@ -482,16 +444,7 @@ impl<'a> Operand<'a> {
                         );
                         return Err(err);
                     },
-                    _ => {
-                        let err = error::syntax_error(
-                            format!("expected instruction, `{}`", stream[0].as_ref()),
-                            stream[0].line(),
-                            stream[0].column(),
-                            stream[0].len()
-                        );
-                        *stream = stream_slice_preserve;
-                        return Err(err);
-                    }
+                    _ => return Err(syntax_error!(stream[0] was stream_slice_preserve, "expected instruction, found `{}`", ref))
                 }
                 if stream.len() > 0 && stream[0].class() == TokenClass::Comma {
                     *stream = &stream[1..];
@@ -548,14 +501,7 @@ impl<'a> InstructionStatement<'a> {
                     *stream = &stream[2..];
                     Ok((label, quantifier, prefix, Some(instruction)))
                 } else {
-                    let err = error::syntax_error(
-                        format!("expected instruction, found `{}`", stream[0].as_ref()),
-                        stream[0].line(),
-                        stream[0].column(),
-                        stream[0].len()
-                    );
-                    *stream = stream_slice_preserve;
-                    Err(err)
+                    Err(syntax_error!(stream[0] was stream_slice_preserve, "expected instruction, found `{}`", ref))
                 }
             },
             [TokenClass::Ident, ..]
@@ -579,14 +525,7 @@ impl<'a> InstructionStatement<'a> {
                 Ok((label, quantifier, prefix, Some(instruction)))
             },
             _ => {
-                let err = error::syntax_error(
-                    format!("expected instruction, found `{}`", stream[0].as_ref()),
-                    stream[0].line(),
-                    stream[0].column(),
-                    stream[0].len()
-                );
-                *stream = stream_slice_preserve;
-                Err(err)
+                Err(syntax_error!(stream[0] was stream_slice_preserve, "expected instruction, found `{}`", ref))
             }
         }
     }

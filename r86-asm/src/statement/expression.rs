@@ -1,3 +1,4 @@
+use crate::syntax_error;
 use crate::error::{error, CompilerResult};
 use crate::token::{Token, TokenClass};
 use crate::{INSTRUCTION, PREFIX_INSTRUCTION, PSEUDO_INSTRUCTION};
@@ -35,6 +36,21 @@ pub enum ExpressionItem<'a> {
         operand1: Box<Expression<'a>>,
         operation: Operation,
         operand2: Box<Expression<'a>>
+    }
+}
+impl<'a> ExpressionItem<'a> {
+    pub fn unwrap_operation(self) -> (Expression<'a>, Operation, Expression<'a>) {
+        match self {
+            ExpressionItem::Operation { operand1, operation, operand2 } => (*operand1, operation, *operand2),
+            _ => None.unwrap()
+        }
+    }
+
+    pub fn unwrap_terminal(self) -> Token<'a> {
+        match self {
+            ExpressionItem::Terminal(token) => token,
+            _ => None.unwrap()
+        }
     }
 }
 
@@ -226,14 +242,7 @@ impl<'a> Expression<'a> {
                         _ => {}
                     }
                     if open_brackets == 0 {
-                        let err = error::syntax_error(
-                            String::from("mismatched closing delimiter"),
-                            stream[0].line(),
-                            stream[0].column(),
-                            stream[0].len()
-                        );
-                        *stream = stream_slice_preserve;
-                        return Err(err);
+                        return Err(syntax_error!(stream[0] was stream_slice_preserve, "mismatched closing delimiter"));
                     }
                     while let Some(last) = operator_stack.pop() {
                         if last.class() != TokenClass::LeftParen {
@@ -327,27 +336,7 @@ impl<'a> Expression<'a> {
 #[cfg(test)]
 mod test {
     use crate::token::{TokenStream, TokenClass};
-    use crate::statement::expression::{Expression, ExpressionItem, Operation};
-
-    macro_rules! unwrap_operation {
-        ($expr:expr) => {
-            if let ExpressionItem::Operation { operand1, operation, operand2 } = $expr.value {
-                (operand1, operation, operand2)
-            } else {
-                panic!("Unexpected expression");
-            }
-        };
-    }
-
-    macro_rules! unwrap_terminal {
-        ($expr:expr) => {
-            if let ExpressionItem::Terminal(t) = $expr.value {
-                t
-            } else {
-                panic!("Unexpected expression");
-            }
-        };
-    }
+    use crate::statement::expression::{Expression, Operation};
 
     #[test]
     fn expr_unexpected_operand() {
@@ -410,9 +399,9 @@ mod test {
         let mut tokens = stream.as_ref();
         let expr = Expression::try_accept(&mut tokens).unwrap().unwrap();
 
-        let (operand1, operation, operand2) = unwrap_operation!(expr);
-        assert_eq!(unwrap_terminal!(operand1).as_ref(), "bx");
-        assert_eq!(unwrap_terminal!(operand2).as_ref(), "si");
+        let (operand1, operation, operand2) = expr.value.unwrap_operation();
+        assert_eq!(operand1.value.unwrap_terminal().as_ref(), "bx");
+        assert_eq!(operand2.value.unwrap_terminal().as_ref(), "si");
         assert_eq!(operation, Operation::Add);
 
         let asm = r"512 - ($ - $$)";
@@ -420,13 +409,13 @@ mod test {
         let mut tokens = stream.as_ref();
         let expr = Expression::try_accept(&mut tokens).unwrap().unwrap();
 
-        let (number, operation, expr) = unwrap_operation!(expr);
-        assert_eq!(unwrap_terminal!(number).as_ref(), "512");
+        let (number, operation, expr) = expr.value.unwrap_operation();
+        assert_eq!(number.value.unwrap_terminal().as_ref(), "512");
         assert_eq!(operation, Operation::Sub);
-        let (start_instr, operation, start_sec) = unwrap_operation!(expr);
-        assert_eq!(unwrap_terminal!(start_instr).as_ref(), "$");
+        let (start_instr, operation, start_sec) = expr.value.unwrap_operation();
+        assert_eq!(start_instr.value.unwrap_terminal().as_ref(), "$");
         assert_eq!(operation, Operation::Sub);
-        assert_eq!(unwrap_terminal!(start_sec).as_ref(), "$$");
+        assert_eq!(start_sec.value.unwrap_terminal().as_ref(), "$$");
     }
 
     #[test]
@@ -437,12 +426,12 @@ mod test {
         let expr = Expression::try_accept(&mut tokens).unwrap().unwrap();
 
         assert_eq!(tokens.iter().map(|t| t.class()).collect::<Vec<_>>(), [TokenClass::Ident, TokenClass::Reg16, TokenClass::Comma, TokenClass::Reg16, TokenClass::EndOfLine]);
-        let (diff, operation, multiplier) = unwrap_operation!(expr);
+        let (diff, operation, multiplier) = expr.value.unwrap_operation();
         assert_eq!(operation, Operation::Mul);
-        assert_eq!(unwrap_terminal!(multiplier).as_ref(), "2");
-        let (my_offset, operation, my_base) = unwrap_operation!(diff);
-        assert_eq!(unwrap_terminal!(my_offset).as_ref(), "my_offset");
+        assert_eq!(multiplier.value.unwrap_terminal().as_ref(), "2");
+        let (my_offset, operation, my_base) = diff.value.unwrap_operation();
+        assert_eq!(my_offset.value.unwrap_terminal().as_ref(), "my_offset");
         assert_eq!(operation, Operation::Sub);
-        assert_eq!(unwrap_terminal!(my_base).as_ref(), "my_base");
+        assert_eq!(my_base.value.unwrap_terminal().as_ref(), "my_base");
     }
 }
