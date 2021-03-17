@@ -10,7 +10,7 @@ pub enum SimulationErrorKind {
 impl SimulationErrorKind {
     pub(self) fn as_str(&self) -> &'static str {
         match *self {
-            SimulationErrorKind::InstructionQueueFull => "instruction queue full"
+            SimulationErrorKind::InstructionQueueFull => "statement queue full"
         }
     }
 }
