@@ -2,27 +2,16 @@ use r86_asm::result::error::{CompilerLog};
 use console::style;
 use std::time::{Instant};
 use r86_asm::lexer::Assembly;
+use std::io::Read;
 
 fn get_file_contents() -> Assembly {
-    let contents = r##"
-    main:
-                                    mov     ax, dx
-                                    xor     cx, cx
-                                    org     0
-                                    dec     cx
-                                    GLOBAL  main
-    .L0:                            loop    .L0
-            TIMES 0xFFF0 - ($ - $$) nop
-    reset:
-                                    jmp     main
-            TIMES 10 - ($ - reset)  db      0x00
-    version:
-                                    dw      0x00
-        .major:                     dw      0x01
-        .minor:                     dw      0x00
-            "##;
+    let mut file = std::fs::File::open("example.asm")
+        .expect("could not open `example.asm`");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .expect("could not read `example.asm`");
 
-    Assembly::new("<anonymous>", contents)
+    Assembly::new("<anonymous>", &contents)
 }
 
 pub fn compile(assembly: Assembly) -> Result<(), CompilerLog> {

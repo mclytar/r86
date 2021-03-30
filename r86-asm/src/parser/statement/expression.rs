@@ -6,11 +6,9 @@ use std::collections::HashMap;
 
 use crate::result::prelude::*;
 use crate::lexer::prelude::*;
-use crate::compiler::unlinked_binary::UnlinkedBinary;
 use crate::parser::statement::label::Label;
 use crate::parser::statement::literal::IntegerLiteral;
-use std::ops::{Add, Sub, Neg};
-//use eval::Poly;
+use crate::compiler::binary::UnsolvedBinary;
 
 #[derive(Debug)]
 struct ExpressionEval {
@@ -22,10 +20,9 @@ impl ExpressionEval {
         ExpressionEval { scalar, sections: HashMap::new() }
     }
 
-    pub fn from_variable(binary: &UnlinkedBinary, var: &Label) -> Option<ExpressionEval> {
+    pub fn from_variable(binary: &UnsolvedBinary, var: &Label) -> Option<ExpressionEval> {
         let mut sections = HashMap::new();
         for section in binary.sections() {
-            let section = section.borrow();
             for label in section.vars() {
                 if label.name() == var.as_str() {
                     sections.insert(section.name(), 1);
@@ -36,16 +33,16 @@ impl ExpressionEval {
         None
     }
 
-    pub fn from_instruction_start(binary: &UnlinkedBinary) -> ExpressionEval {
-        let section = binary.current_section_name();
-        let scalar = binary.current_offset() as i32;
+    pub fn from_instruction_start(binary: &UnsolvedBinary) -> ExpressionEval {
+        let section = binary.current_section().name();
+        let scalar = binary.offset() as i32;
         let mut sections = HashMap::new();
         sections.insert(section, 1);
         ExpressionEval { scalar, sections }
     }
 
-    pub fn from_section_start(binary: &UnlinkedBinary) -> ExpressionEval {
-        let section = binary.current_section_name();
+    pub fn from_section_start(binary: &UnsolvedBinary) -> ExpressionEval {
+        let section = binary.current_section().name();
         let mut sections = HashMap::new();
         sections.insert(section, 1);
         ExpressionEval { scalar: 0, sections }
@@ -129,7 +126,7 @@ pub enum ExpressionTree {
     OperationDiv(Box<ExpressionTree>, Box<ExpressionTree>)
 }
 impl ExpressionTree {
-    pub(self) fn try_eval(&self, binary: &UnlinkedBinary) -> CompilerResult<Option<ExpressionEval>> {
+    pub(self) fn try_eval(&self, binary: &UnsolvedBinary) -> CompilerResult<Option<ExpressionEval>> {
         match self {
             ExpressionTree::Number(num) => Ok(Some(ExpressionEval::from_scalar(num.value()))),
             ExpressionTree::Variable(var) => Ok(ExpressionEval::from_variable(binary, var)),
@@ -157,6 +154,32 @@ impl ExpressionTree {
                 }
             },
             _ => unimplemented!()
+        }
+    }
+
+    pub fn check_references(&self, binary: &UnsolvedBinary) {
+        match &self {
+            ExpressionTree::Variable(label) => if binary.locate_name(label.as_str()).is_none() {
+                binary.err(Notification::error_undefined_symbol(&label, &label));
+            },
+            ExpressionTree::OperationNeg(expr) => expr.as_ref().check_references(binary),
+            ExpressionTree::OperationAdd(expr1, expr2) => {
+                expr1.check_references(binary);
+                expr2.check_references(binary);
+            },
+            ExpressionTree::OperationSub(expr1, expr2) => {
+                expr1.check_references(binary);
+                expr2.check_references(binary);
+            },
+            ExpressionTree::OperationMul(expr1, expr2) => {
+                expr1.check_references(binary);
+                expr2.check_references(binary);
+            },
+            ExpressionTree::OperationDiv(expr1, expr2) => {
+                expr1.check_references(binary);
+                expr2.check_references(binary);
+            },
+            _ => {}
         }
     }
 }
@@ -218,11 +241,11 @@ impl Expression {
         self.ea_calculation
     }
 
-    pub fn eval(&self, _binary: &UnlinkedBinary) -> CompilerResult<i32> {
+    pub fn eval(&self, _binary: &UnsolvedBinary) -> CompilerResult<i32> {
         unimplemented!()
     }
 
-    pub fn try_eval(&self, binary: &UnlinkedBinary) -> CompilerResult<Option<i32>> {
+    pub fn try_eval(&self, binary: &UnsolvedBinary) -> CompilerResult<Option<i32>> {
         if let Some(ref expr_tree) = self.expression_tree {
             if let Some(eval) = expr_tree.try_eval(binary)? {
                 if eval.sections.is_empty() {
@@ -238,7 +261,7 @@ impl Expression {
         }
     }
 
-    pub fn try_eval_offset(&self, binary: &UnlinkedBinary) -> CompilerResult<(Option<Option<String>>, Option<i32>)> {
+    pub fn try_eval_offset(&self, binary: &UnsolvedBinary) -> CompilerResult<(Option<Option<String>>, Option<i32>)> {
         if let Some(ref expr_tree) = self.expression_tree {
             if let Some(eval) = expr_tree.try_eval(binary)? {
                 if eval.sections.is_empty() {
@@ -254,6 +277,12 @@ impl Expression {
             }
         } else {
             Ok((None, Some(0)))
+        }
+    }
+
+    pub fn check_references(&self, binary: &UnsolvedBinary) {
+        if let Some(expression_tree) = &self.expression_tree {
+            expression_tree.check_references(binary)
         }
     }
 }

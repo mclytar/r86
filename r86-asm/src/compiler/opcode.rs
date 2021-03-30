@@ -1,95 +1,20 @@
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use crate::parser::prelude::*;
 use crate::result::prelude::*;
-
-#[derive(Clone, Debug)]
-pub struct LinkerLabel {
-    pub(self) location: Location,
-    pub(self) name: String,
-    pub(self) offset: i32
-}
-impl LinkerLabel {
-    pub fn name(&self) -> &str {
-        &self.name[..]
-    }
-
-    pub fn offset(&self) -> i32 {
-        self.offset
-    }
-}
-impl Locate for LinkerLabel {
-    fn locate(&self) -> Location {
-        self.location
-    }
-}
-
-
-
-#[derive(Clone, Debug)]
-pub struct LinkerDeclaration {
-    pub(self) location: Location,
-    pub(self) name: String
-}
-impl Locate for LinkerDeclaration {
-    fn locate(&self) -> Location {
-        self.location
-    }
-}
-impl AsRef<str> for LinkerDeclaration {
-    fn as_ref(&self) -> &str {
-        &self.name
-    }
-}
-
-
-
-#[derive(Clone, Debug)]
-pub struct UnsolvedOperand {
-    reference: usize,
-    size: usize,
-    operand: Operand
-}
-impl UnsolvedOperand {
-    pub fn new_u8(payload: &mut Vec<u8>, operand: Operand) -> UnsolvedOperand {
-        let reference = payload.len();
-        payload.push(0);
-        let size = 1;
-        UnsolvedOperand { reference, size, operand }
-    }
-
-    pub fn new_u16(payload: &mut Vec<u8>, operand: Operand) -> UnsolvedOperand {
-        let reference = payload.len();
-        payload.push(0);
-        payload.push(0);
-        let size = 2;
-        UnsolvedOperand { reference, size, operand }
-    }
-
-    pub fn new_u32(payload: &mut Vec<u8>, operand: Operand) -> UnsolvedOperand {
-        let reference = payload.len();
-        payload.push(0);
-        payload.push(0);
-        payload.push(0);
-        payload.push(0);
-        let size = 4;
-        UnsolvedOperand { reference, size, operand }
-    }
-}
-
+use super::operand::UnsolvedOperand;
+use super::binary::UnsolvedBinary;
 
 #[derive(Clone, Debug)]
 pub struct OpCode {
     location: Location,
     repetitions: i32,
-    payload: Vec<u8>,
+    payload: RefCell<Vec<u8>>,
     origin: u16,
-    unsolved_ops: Vec<UnsolvedOperand>
+    unsolved_ops: RefCell<Vec<UnsolvedOperand>>
 }
 impl OpCode {
-    pub fn from_instr(binary: &mut UnlinkedBinary, instr: Instruction) -> CompilerResult<Self> {
+    pub fn from_instr(binary: &mut UnsolvedBinary, instr: Instruction) -> CompilerResult<Self> {
         let location = instr.locate();
 
         let repetitions = if let Some(quantifier) = instr.quantifier() {
@@ -112,7 +37,7 @@ impl OpCode {
             Some(*prefix_location)
         } else { None };
 
-        let origin = binary.current_offset();
+        let origin = binary.offset() as u16;
         let mut unsolved_ops = Vec::new();
 
         // Decoding instruction.
@@ -127,24 +52,33 @@ impl OpCode {
                 match_operands!(binary, payload, location, operands;
                     ( [word] Acc <dir> Mem(_segment, address) ) => {
                         payload.push(byte!(0b1010_0000, w = word, d = dir));
-
-                        if let (_, Some(offset)) = address.try_eval_offset(binary)? {
-                            push_word!(payload, offset);
-                        } else {
-                            let operand = if dir { operands[1].to_owned() } else { operands[0].to_owned() };
-                            unsolved_ops.push(UnsolvedOperand::new_u16(&mut payload, operand));
-                        }
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [true] address);
                     },
                     ( [word] Reg(reg) <- Imm(value) ) => {
                         payload.push(byte!(0b1011_0000, wh = word) | *reg);
-                        return Err(Notification::error_unimplemented(location));
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] value);
                     },
                     ( [word] Reg(reg1) <- Reg(reg2) ) => {
                         payload.push(byte!(0b1000_1000, w = word));
                         payload.push(byte!(0b11_000_000, regh = *reg2, reg = *reg1));
                     },
-                    default => {
-                        return Err(Notification::error_unimplemented(location));
+                    ( [word] Reg(reg) <dir> Mem(segment, address) ) => {
+                        payload.push(byte!(0b1000_1000, w = word, d = dir));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                    },
+                    ( [word] Mem(segment, address) <- Imm(value) ) => {
+                        payload.push(byte!(0b1100_0110, w = word));
+                        let reg = 0; let dir = true;
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] value);
+                    },
+                    ( SegReg(seg_reg) <dir> Reg(reg) ) => {
+                        payload.push(byte!(0b1000_1100, d = dir));
+                        payload.push(byte!(0b11_000_000, regh = *seg_reg, reg = *reg));
+                    },
+                    ( SegReg(seg_reg) <dir> Mem(segment, address) ) => {
+                        payload.push(byte!(0b1000_1100, d = dir));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] seg_reg <dir> address);
                     }
                 );
             },
@@ -205,30 +139,31 @@ impl OpCode {
                     "xor" => 0b110,
                     "cmp" => 0b111,
                     _ => unreachable!()
-                } << 3;
+                };
                 match_operands!(binary, payload, location, operands;
                     ( [word] Acc <- Imm(expr) ) => {
-                        payload.push(byte!(0b0000_0100, w = word) | alu_opcode);
+                        payload.push(byte!(0b0000_0100, w = word) | (alu_opcode << 3));
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);
+                    },
+                    ( [_word] Reg(_reg) <- Imm(expr) ) => {
+                        /*payload.push(byte!(0b1000_0000, w = word, s = true));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
                         return Err(Notification::error_unimplemented(location));
                     },
-                    ( [word] Reg(reg) <- Imm(expr) ) => {
-                        payload.push(byte!(0b1000_0000, w = word, s = true));
-                        return Err(Notification::error_unimplemented(location));
-                    },
-                    ( [word] Mem(segment, address) <- Imm(expr) ) => {
-                        //payload.push(byte!(0b1000_0000, w = word, s = true));
+                    ( [_word] Mem(segment, _address) <- Imm(expr) ) => {
+                        /*payload.push(byte!(0b1000_0000, w = word, s = true));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] alu_opcode <dir> address);
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
                         return Err(Notification::error_unimplemented(location));
                     },
                     ( [word] Reg(reg1) <- Reg(reg2) ) => {
-                        payload.push(byte!(0b0000_0000, w = word) | alu_opcode);
+                        payload.push(byte!(0b0000_0000, w = word) | (alu_opcode << 3));
                         payload.push(0b11_000_000 | (*reg2 << 3) | *reg1);
                     },
                     ( [word] Reg(reg) <dir> Mem(segment, address) ) => {
-                        payload.push(byte!(0b0000_0000, w = word) | alu_opcode);
-                        return Err(Notification::error_unimplemented(location));
-                    },
-                    default => {
-                        return Err(Notification::error_invalid_set_of_operands(location, &operands));
+                        payload.push(byte!(0b0000_0000, w = word) | (alu_opcode << 3));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
                     }
                 );
             },
@@ -244,13 +179,13 @@ impl OpCode {
                     "rcl" => 0b010,
                     "rcr" => 0b011,
                     _ => unreachable!()
-                } << 3;
+                };
                 match_operands!(binary, payload, location, operands;
                     ( [word] Reg(reg) <- Imm(expr) ) => {
                         if let Some(value) = expr.try_eval(binary)? {
                             for _ in 0..value {
                                 payload.push(byte!(0b1101_0000, v = false, w = word));
-                                payload.push(0b11_000_000 | alu_opcode | *reg);
+                                payload.push(0b11_000_000 | (alu_opcode << 3) | *reg);
                             }
                         } else {
                             return Err(Notification::error_critical_expression_evaluation(expr));
@@ -258,15 +193,15 @@ impl OpCode {
                     },
                     ( [word] Mem(segment, address) <- Imm(expr) ) => {
                         if let Some(value) = expr.try_eval(binary)? {
-                            return Err(Notification::error_unimplemented(location));
                             for _ in 0..value {
-                                //payload.push(byte!(0b1101_0000, v = false, w = word));
-                                //payload.push(0b11_000_000 | alu_opcode | *reg);
+                                payload.push(byte!(0b1101_0000, v = false, w = word));
+                                let dir = false;
+                                push_modrm!(binary, operands, unsolved_ops, payload; [word] alu_opcode <dir> address);
                             }
                         } else {
                             return Err(Notification::error_critical_expression_evaluation(expr));
                         }
-                    },
+                    }
                     // TODO
                     /*( [word] Reg(reg1) <- Ctr ) => {
                         payload.push(byte!(0b1101_0000, v = true, w = word));
@@ -276,10 +211,6 @@ impl OpCode {
                         payload.push(byte!(0b1101_0000, v = true, w = word));
                         return Err(Notification::error_unimplemented(location));
                     },*/
-                    default => {
-                        expect_operands!(location; operands, 2);
-                        return Err(Notification::error_invalid_set_of_operands(location, &operands));
-                    }
                 );
             },
             // --------------------------------
@@ -301,17 +232,10 @@ impl OpCode {
                             payload.push(0b11_000_000 | alu_opcode | *reg);
                         }
                     },
-                    ( [word] Mem(segment, address) ) => {
+                    ( [_word] Mem(segment, _address) ) => {
                         return Err(Notification::error_unimplemented(location));
                         //payload.push(byte!(0b1101_0000, v = false, w = word));
                         //payload.push(0b11_000_000 | alu_opcode | *reg);
-                    },
-                    default => {
-                        if operands.len() != 2 {
-                            return Err(Notification::error_operands_amount(location, 2, operands.len(), &operands));
-                        } else {
-                            return Err(Notification::error_invalid_set_of_operands(location, &operands));
-                        }
                     }
                 );
             },
@@ -345,10 +269,10 @@ impl OpCode {
             "jmp" => {
                 expect_operands!(location; operands, 1);
                 match_operands!(binary, payload, location, operands;
-                    ( [word] Imm(expr) ) => {
+                    ( Imm(expr) ) => {
                         if let (Some(section), Some(value)) = expr.try_eval_offset(binary)? {
-                            if section == binary.current_section_name() {
-                                let (word, offset) = resize!(2 + value - (binary.current_offset() as i32 + payload.len() as i32));
+                            if section == binary.current_section().name() {
+                                let (word, offset) = resize!(2 + value - (binary.offset() as i32 + payload.len() as i32));
                                 if word {
                                     payload.push(0b1110_1001);
                                     push_word!(payload, offset + 1);
@@ -365,28 +289,20 @@ impl OpCode {
                             unsolved_ops.push(UnsolvedOperand::new_u16(&mut payload, operands[0].to_owned()));
                         }
                     },
-                    ( [word] Mem(segment, address) ) => {
+                    ( [_word] Mem(segment, _address) ) => {
                         return Err(Notification::error_unimplemented(location));
                         //payload.push(byte!(0b1101_0000, v = false, w = word));
                         //payload.push(0b11_000_000 | alu_opcode | *reg);
-                    },
-                    default => {
-                        return Err(Notification::error_unimplemented(location));
-                        if operands.len() != 2 {
-                            return Err(Notification::error_operands_amount(location, 2, operands.len(), &operands));
-                        } else {
-                            return Err(Notification::error_invalid_set_of_operands(location, &operands));
-                        }
                     }
                 );
             },
             "loop" => {
                 expect_operands!(location; operands, 1);
                 match_operands!(binary, payload, location, operands;
-                    ( [word] Imm(expr) ) => {
+                    ( Imm(expr) ) => {
                         if let (Some(section), Some(value)) = expr.try_eval_offset(binary)? {
-                            if section == binary.current_section_name() {
-                                let (word, offset) = resize!(2 + value - (binary.current_offset() as i32 + payload.len() as i32));
+                            if section == binary.current_section().name() {
+                                let (word, offset) = resize!(2 + value - (binary.offset() as i32 + payload.len() as i32));
                                 if word {
                                     return Err(Notification::error_invalid_set_of_operands(location, &operands));
                                 } else {
@@ -399,19 +315,6 @@ impl OpCode {
                         } else {
                             payload.push(0b1110_1001);
                             unsolved_ops.push(UnsolvedOperand::new_u8(&mut payload, operands[0].to_owned()));
-                        }
-                    },
-                    ( [word] Mem(segment, address) ) => {
-                        return Err(Notification::error_unimplemented(location));
-                        //payload.push(byte!(0b1101_0000, v = false, w = word));
-                        //payload.push(0b11_000_000 | alu_opcode | *reg);
-                    },
-                    default => {
-                        return Err(Notification::error_unimplemented(location));
-                        if operands.len() != 2 {
-                            return Err(Notification::error_operands_amount(location, 2, operands.len(), &operands));
-                        } else {
-                            return Err(Notification::error_invalid_set_of_operands(location, &operands));
                         }
                     }
                 );
@@ -429,10 +332,10 @@ impl OpCode {
             "db" => {
                 for i in 0..operands.len() {
                     match_operands!(binary, payload, location, &operands[i..i+1];
-                        ( [word] Imm(expr)) => {
+                        ( Imm(expr)) => {
                             match expr.try_eval_offset(binary)? {
                                 (Some(section), Some(value)) => {
-                                    if section != binary.current_section_name() {
+                                    if section != binary.current_section().name() {
                                         return Err(Notification::error_invalid_set_of_operands(location, &operands));
                                     }
                                     if value >= 256 {
@@ -450,9 +353,6 @@ impl OpCode {
                                     unsolved_ops.push(UnsolvedOperand::new_u8(&mut payload, operands[0].to_owned()));
                                 }
                             }
-                        },
-                        default => {
-                            return Err(Notification::error_invalid_set_of_operands(location, &operands));
                         }
                     );
                 }
@@ -460,10 +360,10 @@ impl OpCode {
             "dw" => {
                 for i in 0..operands.len() {
                     match_operands!(binary, payload, location, &operands[i..i+1];
-                        ( [word] Imm(expr)) => {
+                        ( Imm(expr)) => {
                             match expr.try_eval_offset(binary)? {
                                 (Some(section), Some(value)) => {
-                                    if section != binary.current_section_name() {
+                                    if section != binary.current_section().name() {
                                         return Err(Notification::error_invalid_set_of_operands(location, &operands));
                                     }
                                     if value >= 65536 {
@@ -481,260 +381,58 @@ impl OpCode {
                                     unsolved_ops.push(UnsolvedOperand::new_u8(&mut payload, operands[0].to_owned()));
                                 }
                             }
-                        },
-                        default => {
-                            return Err(Notification::error_invalid_set_of_operands(location, &operands));
                         }
                     );
                 }
             },
             _ => return Err(Notification::error_unimplemented(location))
         }
-        binary.advance(payload.len() as u16 * repetitions as u16);
+        binary.advance(payload.len() as i32 * repetitions);
         Ok(OpCode {
             location,
             repetitions,
-            payload,
+            payload: RefCell::new(payload),
             origin,
-            unsolved_ops
+            unsolved_ops: RefCell::new(unsolved_ops)
         })
     }
 
     pub fn size(&self) -> usize {
-        self.payload.len() * self.repetitions as usize
+        self.payload.borrow().len() * self.repetitions as usize
+    }
+
+    pub fn payload(&self) -> std::cell::Ref<Vec<u8>> {
+        self.payload.borrow()
+    }
+
+    pub fn check_references(&self, binary: &UnsolvedBinary) {
+        for op in self.unsolved_ops.borrow().iter() {
+            op.check_references(binary);
+        }
+    }
+
+    pub fn solve_references(&self, binary: &UnsolvedBinary, section: Option<&String>) {
+        let mut solved = Vec::new();
+        for (id, op) in self.unsolved_ops.borrow_mut().iter_mut().enumerate() {
+            if let Some(mut solution) = op.try_solve(binary, section) {
+                solved.push(id);
+                let mut size = op.size();
+                let mut reference = op.reference();
+                while size > 0 {
+                    self.payload.borrow_mut()[reference] = (solution & 0xFF) as u8;
+                    solution >>= 8;
+                    size -= 1;
+                    reference += 1;
+                }
+            }
+        }
+        while let Some(id) = solved.pop() {
+            self.unsolved_ops.borrow_mut().remove(id);
+        }
     }
 }
 impl Locate for OpCode {
     fn locate(&self) -> Location {
         self.location
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Section {
-    pub(self) location: Location,
-    pub(self) name: Option<String>,
-    pub(self) local_vars: Vec<LinkerLabel>,
-    pub(self) opcodes: Vec<OpCode>
-}
-impl Section {
-    pub fn name(&self) -> Option<String> {
-        self.name.clone()
-    }
-
-    pub fn vars(&self) -> &[LinkerLabel] {
-        &self.local_vars[..]
-    }
-
-    pub fn opcodes(&self) -> &[OpCode] {
-        &self.opcodes[..]
-    }
-}
-impl Locate for Section {
-    fn locate(&self) -> Location {
-        self.location
-    }
-}
-
-#[derive(Debug)]
-pub struct UnlinkedBinary {
-    filename: PathBuf,
-    contents: Rc<String>,
-    log: CompilerLog,
-    pub(self) sections: Vec<Rc<RefCell<Section>>>,
-    pub(self) global_vars: Vec<LinkerDeclaration>,
-    pub(self) extern_vars: Vec<LinkerDeclaration>,
-    pub(self) origin: u16,
-    pub(self) offset: u16,
-    pub(self) last_label: Option<String>,
-    pub(self) current_section: Rc<RefCell<Section>>
-}
-impl UnlinkedBinary {
-    pub fn new(filename: PathBuf, contents: Rc<String>, log: CompilerLog) -> Self {
-        let current_section = Section { location: Location::new(0, 0, 0, 0), name: None, local_vars: Vec::new(), opcodes: Vec::new() };
-        let current_section = Rc::new(RefCell::new(current_section));
-        UnlinkedBinary {
-            filename,
-            contents,
-            log,
-            sections: vec![current_section.clone()],
-            current_section,
-            origin: 0,
-            offset: 0,
-            last_label: None,
-            global_vars: Vec::new(),
-            extern_vars: Vec::new()
-        }
-    }
-
-    pub fn filename(&self) -> &Path {
-        &self.filename
-    }
-
-    pub fn contents(&self) -> Rc<String> {
-        self.contents.clone()
-    }
-
-    pub fn warn(&mut self, warning: Notification) {
-        self.log.warn(warning);
-    }
-
-    pub fn err(&mut self, error: Notification) {
-        self.log.err(error);
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.contents.as_str()
-    }
-
-    pub fn declare_global<S>(&mut self, var: S) -> CompilerResult<()> where
-        S: AsRef<str> + Locate {
-        if let Some(dup) = self.global_vars.iter().find(|s| s.as_ref() == var.as_ref()) {
-            return Err(Notification::error_duplicate_definition(var.as_ref(), dup, &var));
-        }
-        let declaration = LinkerDeclaration { location: var.locate(), name: var.as_ref().to_owned() };
-        self.global_vars.push(declaration);
-        Ok(())
-    }
-
-    pub fn declare_extern<S>(&mut self, var: S) -> CompilerResult<()> where
-        S: AsRef<str> + Locate {
-        if let Some(dup) = self.extern_vars.iter().find(|s| s.as_ref() == var.as_ref()) {
-            return Err(Notification::error_duplicate_definition(var.as_ref(), dup, &var));
-        }
-        let declaration = LinkerDeclaration { location: var.locate(), name: var.as_ref().to_owned() };
-        self.extern_vars.push(declaration);
-        Ok(())
-    }
-
-    pub fn declare_section<S>(&mut self, name: S) -> CompilerResult<()> where
-        S: AsRef<str> + Locate {
-        let result = if let Some(dup) = self.sections.iter().find(|s| if let Some(ref dup) = s.as_ref().borrow().name { dup == name.as_ref() } else { false }) {
-            Err(Notification::error_duplicate_definition(name.as_ref(), dup.as_ref().borrow().locate(), &name))
-        } else {
-            Ok(())
-        };
-        let section = Section { location: name.locate(), name: Some(name.as_ref().to_owned()), local_vars: Vec::new(), opcodes: Vec::new() };
-        let section = Rc::new(RefCell::new(section));
-        self.sections.push(section.clone());
-        self.origin = 0;
-        self.offset = 0;
-        self.last_label = None;
-        self.current_section = section;
-        result
-    }
-
-    pub fn declare_local_label<S>(&mut self, name: S) -> CompilerResult<()> where
-        S: AsRef<str> + Locate {
-        let location = name.locate();
-        let name = name.as_ref();
-        let name = if name.starts_with('.') {
-            if let Some(label) = self.last_label.as_ref() {
-                label.to_owned() + name
-            } else {
-                name.to_owned()
-            }
-        } else {
-            name.to_owned()
-        };
-        for sec in self.sections.iter() {
-            for dup in sec.as_ref().borrow().local_vars.iter() {
-                if &dup.name == &name {
-                    return Err(Notification::error_duplicate_definition(&name, dup, location));
-                }
-            }
-        }
-        let label = LinkerLabel { location, name, offset: self.offset as i32 };
-        self.current_section.borrow_mut()
-            .local_vars.push(label);
-        Ok(())
-    }
-
-    pub fn set_origin(&mut self, origin: i32) {
-        self.origin = origin as u16;
-    }
-
-    pub fn advance(&mut self, amount: u16) {
-        self.offset = self.offset.overflowing_add(amount).0;
-    }
-
-    pub fn sections(&self) -> &[Rc<RefCell<Section>>] {
-        &self.sections[..]
-    }
-
-    pub fn current_section_name(&self) -> Option<String> {
-        self.current_section.as_ref()
-            .borrow()
-            .name()
-    }
-
-    pub fn current_offset(&self) -> u16 {
-        self.offset
-    }
-
-    pub fn process_statement(&mut self, statement: Statement) -> CompilerResult<()> {
-        match statement.kind() {
-            StatementKind::Global(label) => self.declare_global(label)?,
-            StatementKind::Extern(label) => self.declare_extern(label)?,
-            StatementKind::Section(label) => self.declare_section(label)?,
-            StatementKind::Origin(num) => self.set_origin(num.value()),
-            StatementKind::Label(label) => self.declare_local_label(label)?,
-            StatementKind::Instruction(instr) => {
-                if let Some(label) = instr.label() {
-                    if let Err(error) = self.declare_local_label(label) {
-                        self.err(error);
-                    }
-                }
-                let opcode = OpCode::from_instr(self, instr.to_owned())?;
-                self.current_section.borrow_mut().opcodes.push(opcode);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn from_listing(listing: Listing) -> Result<Self, CompilerLog> {
-        let Listing { filename, contents, log, statements, .. } = listing;
-        let mut binary = Self::new(filename, contents, log);
-        for statement in statements {
-            if let Err(error) = binary.process_statement(statement) {
-                binary.err(error);
-            }
-        }
-        let mut iter_of_ops = Vec::new();
-        for section in binary.sections.iter() {
-            let section = (section as &RefCell<Section>).borrow();
-            for opcode in section.opcodes() {
-                for _ in 0..opcode.repetitions {
-                    for byte in opcode.payload.iter() {
-                        iter_of_ops.push(*byte);
-                    }
-                }
-            }
-        }
-        println!("Generated binary:");
-        let mut display = true;
-        for i in 0..iter_of_ops.len() {
-            if i > 0 && i % 16 == 0 {
-                if i < iter_of_ops.len() - 16 && &iter_of_ops[i - 16..i] == &iter_of_ops[i..i + 16] {
-                    if display { println!(); print!("..."); }
-                    display = false;
-                } else {
-                    println!();
-                    display = true;
-                }
-            }
-            if i % 16 == 0 && display {
-                print!("{:04x}: ", i);
-            }
-            if display {
-                print!("{:02x} ", iter_of_ops[i]);
-            }
-        }
-        println!();
-        if binary.log.is_err() {
-            Err(binary.log)
-        } else {
-            Ok(binary)
-        }
     }
 }

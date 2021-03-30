@@ -93,7 +93,7 @@ impl SyntaxCapture {
         }
     }
 
-    pub fn amount(&self) -> usize {
+    pub fn count(&self) -> usize {
         self.capture.len()
     }
 

@@ -277,7 +277,7 @@ impl ExpressionTree {
             | ExpressionKind::InstructionStart(_)
             | ExpressionKind::SectionStart(_)
             => Ok(0),
-            ExpressionKind::Reg16(_, _) => Ok(1),
+            ExpressionKind::Reg16(_, found) => Ok(if *found == reg { 1 } else { 0 }),
             ExpressionKind::BinaryOperation(op, expr1, expr2) => {
                 match op {
                     Operation::Add(_) => Ok(expr1.coefficient_of_register(reg)? + expr2.coefficient_of_register(reg)?),

@@ -137,10 +137,10 @@ impl Token {
         }
 
         let s = &text[start..];
-        let eof = text.len();
+        let eof = s.len();
 
         let (end, class) = if s.starts_with(';') || s.starts_with('\n') {             // Comment
-            let end = s.find('\n').map(|p| p + start + 1).unwrap_or(eof);
+            let end = s.find('\n').map(|p| p + start + 1).unwrap_or(eof + start);
             (end, TokenClass::EndOfLine)
         } else if s.starts_with(|c: char| c.is_whitespace()) {                                      // Whitespace
             if let Some(pos) = s.find(|c: char| !c.is_whitespace() || c == '\n') {
@@ -187,12 +187,12 @@ impl Token {
         } else if s.starts_with(|c: char| c.is_numeric()) {                                         // Numeric literal
             let end = s.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                 .map(|pos| pos + start)
-                .unwrap_or(eof);
+                .unwrap_or(eof + start);
             (end, TokenClass::IntegerLiteral)
         } else if s.starts_with(|c: char| c == '\'' || c == '"') {                                  // String literal
             unimplemented!()
         } else if s.starts_with('$') {                                                         // Dollar or DoubleDollar
-            let end = s.find(|c: char| c != '$').map(|pos| pos + start).unwrap_or(eof);
+            let end = s.find(|c: char| c != '$').map(|pos| pos + start).unwrap_or(eof + start);
             let class = match end - start {
                 1 => TokenClass::InstructionStart,
                 2 => TokenClass::SectionStart,
@@ -346,11 +346,11 @@ impl AsRef<[Token]> for TokenStream {
         &self.stream[..]
     }
 }
-impl Index<usize> for TokenStream {
+impl Index<isize> for TokenStream {
     type Output = Token;
 
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.stream[self.position + index]
+    fn index(&self, index: isize) -> &Self::Output {
+        &self.stream[(self.position as isize + index) as usize]
     }
 }
 impl Index<Location> for TokenStream {

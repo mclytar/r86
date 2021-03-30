@@ -1,7 +1,11 @@
 #[macro_use]
 pub mod macros;
-pub mod unlinked_binary;
+pub mod opcode;
+pub mod operand;
+pub mod section;
+pub mod binary;
+pub mod vars;
 
 pub mod prelude {
-    pub use super::unlinked_binary::UnlinkedBinary;
+    pub use super::binary::UnsolvedBinary;
 }

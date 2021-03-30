@@ -24,7 +24,7 @@ impl Instruction {
             let location = capture[0].locate();
             return Ok(Instruction { location, label: None, quantifier: None, prefix: None, name: token_stream[location].to_lowercase(), operands: Vec::new() });
         } else if let Some(capture) = token_stream.capture(syntax_rule![ { [ PrefixInstruction ] } { Instruction } ]) {
-            if capture.amount() > 1 {
+            if capture.count() > 1 {
                 let prefix_location = capture[0].locate();
                 let prefix_name = token_stream[prefix_location].to_lowercase();
                 let location = capture[1].locate();

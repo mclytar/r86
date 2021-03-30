@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::result::prelude::*;
 use crate::lexer::prelude::*;
-use crate::compiler::unlinked_binary::UnlinkedBinary;
+use crate::compiler::binary::UnsolvedBinary;
 
 #[derive(Clone, Debug)]
 pub struct Label {
@@ -53,9 +53,9 @@ impl Label {
         }
     }
 
-    pub fn try_eval(&self, binary: &UnlinkedBinary) -> Option<i32> {
+    pub fn try_eval(&self, binary: &UnsolvedBinary) -> Option<i32> {
         for section in binary.sections() {
-            for label in section.borrow().vars() {
+            for label in section.vars() {
                 if label.name() == self.name {
                     return Some(label.offset())
                 }

@@ -79,6 +79,11 @@ impl Location {
     pub fn set_end(&mut self, end: usize) {
         self.end = end;
     }
+
+    pub fn limit(mut self, len: usize) -> Self {
+        self.end = self.start + len;
+        self
+    }
 }
 impl Locate for Location {
     fn locate(&self) -> Location {
@@ -174,19 +179,6 @@ pub enum NotificationKind {
     Warning,
     Error
 }
-/*impl ToString for NotificationKind {
-    fn to_string(&self) -> String {
-        use NotificationKind::{Warning as W, Error as E};
-        use NotificationErrorKind as Error;
-        let description = match *self {
-            W => "",
-            E(Error::Unimplemented) => "this feature is currently unimplemented",
-            E(Error::LexerIllegalSymbol) => "illegal symbol in token",
-            E(Error::LexerTooManyDollars) => "illegal sequence of `$`"
-        };
-        String::from(description)
-    }
-}*/
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum NotificationLine {
@@ -196,44 +188,6 @@ pub enum NotificationLine {
     Footnote { contents: String }
 }
 impl NotificationLine {
-    /*for line in self.lines.iter() {
-            let caption = if let Some(ref caption) = line.caption {
-                &caption[..]
-            } else {
-                ""
-            };
-            let (l, c, len) = line.coords();
-            let source = source.lines()
-                .skip(l - 1)
-                .next()
-                .unwrap();
-            if let Some(last_line) = last_line {
-                if last_line != line.coords().0 && last_line != line.coords().0 + 1 {
-                    println!("{}",style("...").cyan().bright());
-                }
-            }
-            println!("{:width$} {}", "", style("|").cyan().bright(), width = l_width);
-            println!("{:width$} {} {}", style(l).cyan().bright(), style("|").cyan().bright(), source, width = l_width);
-            println!("{:width$} {}{}{} {}",
-                     "",
-                     style("|").cyan().bright(),
-                     " ".repeat(c),
-                     line.style().apply_to(if *line.style() == help_style() { "-" } else { "^" }.repeat(len)),
-                     line.style().apply_to(caption),
-                     width = l_width
-            );
-            last_line = Some(line.coords().0)
-        }
-        for remark in self.remarks.iter() {
-            let mut remark_lines = remark.iter();
-            if let Some(line) = remark_lines.next() {
-                println!("{:width$} {} {}","", style("=").cyan().bright(), line, width = l_width);
-            }
-            for line in remark_lines {
-                println!("{:width$}   {}", "", line, width = l_width);
-            }
-        }*/
-
     pub fn display(&self, width: usize, text: &String, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             NotificationLine::MainLine { style, location, note } => {
@@ -245,51 +199,58 @@ impl NotificationLine {
                 } else {
                     "-"
                 };
+                write!(f, "{:width$} {}{}{}", "", help_style().apply_to("|"), " ".repeat(location.column()), style.apply_to(underline_symbol.repeat(location.len())), width = width)?;
+
                 if let Some(note) = note {
-                    writeln!(f, "{:width$} {}{}{} {}",
-                             "",
-                             help_style().apply_to("|"),
-                             " ".repeat(location.column()),
-                             style.apply_to(underline_symbol.repeat(location.len())),
-                             style.apply_to(note),
-                             width = width
-                    )?;
+                    writeln!(f, " {}", style.apply_to(note))?;
                 } else {
-                    writeln!(f, "{:width$} {}{}{}",
-                             "",
-                             help_style().apply_to("|"),
-                             " ".repeat(location.column()),
-                             style.apply_to(underline_symbol.repeat(location.len())),
-                             width = width
-                    )?;
+                    writeln!(f, "")?;
                 }
             },
             NotificationLine::MainLineWithHelp { style, location, note, help_locations, help_note } => {
                 let line = text.lines().nth(location.line() - 1).unwrap();
                 writeln!(f, "{:width$} {}", "", help_style().apply_to("|"), width = width)?;
                 writeln!(f, "{:width$} {} {}", help_style().apply_to(location.line()), help_style().apply_to("|"), line, width = width)?;
-                let underline_symbol = if *style == error_style() || *style == warning_style() {
-                    "^"
+                let mut locations: Vec<_> = help_locations.iter()
+                    .map(|l| (true, *l))
+                    .collect();
+                locations.push((false, *location));
+                locations.sort_by(|(_, x), (_, y)| x.column().cmp(&y.column()));
+                write!(f, "{:width$} {}", "", help_style().apply_to("|"), width = width)?;
+                let mut column = 0;
+                for (help, location) in &locations[..] {
+                    if column < location.column() {
+                        write!(f, "{}", " ".repeat(location.column() - column))?;
+                        column = location.column() + location.len();
+                    }
+                    if *help {
+                        write!(f, "{}", help_style().apply_to("-".repeat(location.len())))?;
+                    } else {
+                        write!(f, "{}", style.apply_to("^".repeat(location.len())))?;
+                    }
+                }
+                if locations.last().unwrap().0 {
+                    if let Some(note) = help_note {
+                        writeln!(f, " {}", help_style().apply_to(note))?;
+                    } else {
+                        writeln!(f, "")?;
+                    }
+                    if let Some(note) = note {
+                        let min = locations.iter().map(|(_, l)| l.column()).min().unwrap();
+                        writeln!(f, "{:width$} {}{}{}", "", help_style().apply_to("|"), " ".repeat(min), style.apply_to("|"), width = width)?;
+                        writeln!(f, "{:width$} {}{}{}", "", help_style().apply_to("|"), " ".repeat(min), style.apply_to(note), width = width)?;
+                    }
                 } else {
-                    "-"
-                };
-                if let Some(note) = note {
-                    writeln!(f, "{:width$} {}{}{} {}",
-                             "",
-                             help_style().apply_to("|"),
-                             " ".repeat(location.column()),
-                             style.apply_to(underline_symbol.repeat(location.len())),
-                             style.apply_to(note),
-                             width = width
-                    )?;
-                } else {
-                    writeln!(f, "{:width$} {}{}{}",
-                             "",
-                             help_style().apply_to("|"),
-                             " ".repeat(location.column()),
-                             style.apply_to(underline_symbol.repeat(location.len())),
-                             width = width
-                    )?;
+                    if let Some(note) = note {
+                        writeln!(f, " {}", style.apply_to(note))?;
+                    } else {
+                        writeln!(f, "")?;
+                    }
+                    if let Some(note) = help_note {
+                        let min = locations.iter().map(|(_, l)| l.column()).min().unwrap();
+                        writeln!(f, "{:width$} {}{}{}", "", help_style().apply_to("|"), " ".repeat(min), help_style().apply_to("|"), width = width)?;
+                        writeln!(f, "{:width$} {}{}{}", "", help_style().apply_to("|"), " ".repeat(min), help_style().apply_to(note), width = width)?;
+                    }
                 }
             },
             _ => unimplemented!()
@@ -392,7 +353,7 @@ impl Notification {
 
     pub fn error_parser_invalid_combination_of_registers<L>(_location: L) -> Self where
         L: Locate {
-        unimplemented!()
+        unimplemented!("{}:{}", _location.line(), _location.column())
     }
 
     pub fn error_parser_non_scalar_division<L>(_location: L) -> Self where
@@ -415,16 +376,47 @@ impl Notification {
         unimplemented!()
     }
 
-    pub fn error_duplicate_definition<S, F, L>(name: S, first: F, location: L) -> Self where
-        S: ToString,
-        F: Locate,
+    pub fn error_undefined_symbol<S, L>(name: S, location: L) -> Self where
+        S: AsRef<str>,
         L: Locate {
         let kind = NotificationKind::Error;
-        let description = format!("duplicate definitions with name `{}`", name.to_string());
+        let description = format!("no label or variable `{}` found in this scope", name.as_ref());
         let line_number = location.line();
         let column = location.column();
         let lines = vec![
-            NotificationLine::MainLine { style: help_style(), location: first.locate(), note: Some(format!("previous definition of `{}` here", name.to_string())) },
+            NotificationLine::MainLine { style: help_style(), location: location.locate(), note: Some(String::from("not found in this scope")) }
+        ];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
+    pub fn error_undefined_symbol_in_struct<S, L, SS, SL>(name: S, location: L, struct_name: SS, struct_location: SL) -> Self where
+        S: AsRef<str>,
+        L: Locate,
+        SS: AsRef<str>,
+        SL: Locate {
+        let kind = NotificationKind::Error;
+        let description = format!("no field `{}` found in `{}`", name.as_ref(), struct_name.as_ref());
+        let line_number = location.line();
+        let column = location.column();
+        let lines = vec![
+            NotificationLine::MainLine { style: error_style(), location: location.locate(), note: Some(format!("field not found in `{}`", struct_name.as_ref())) },
+            NotificationLine::MainLine { style: help_style(), location: struct_location.locate(), note: Some(format!("field `{}` not found for this", name.as_ref())) }
+        ];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
+    pub fn error_duplicate_definition<S, F, L>(name: S, first: F, location: L) -> Self where
+        S: AsRef<str>,
+        F: Locate,
+        L: Locate {
+        let kind = NotificationKind::Error;
+        let description = format!("duplicate definitions with name `{}`", name.as_ref());
+        let line_number = location.line();
+        let column = location.column();
+        let lines = vec![
+            NotificationLine::MainLine { style: help_style(), location: first.locate(), note: Some(format!("previous definition of `{}` here", name.as_ref())) },
             NotificationLine::MainLine { style: error_style(), location: location.locate(), note: Some(String::from("duplicate definition")) }
         ];
 
@@ -506,15 +498,43 @@ impl Notification {
         Notification { kind, description, line_number, column, filename: None, text: None, lines }
     }
 
-    pub fn error_invalid_set_of_operands<L, OP>(_location: L, _operands_location: &Vec<OP>) -> Self where
+    pub fn error_invalid_set_of_operands<L, OP>(_location: L, _operands_location: &[OP]) -> Self where
         L: Locate,
         OP: Locate {
         unimplemented!()
     }
 
-    pub fn warning_label_alone_without_colon<L>(_location: L) -> Self where
+    pub fn warning_label_alone_without_colon<L>(location: L) -> Self where
         L: Locate {
-        unimplemented!()
+        let kind = NotificationKind::Warning;
+        let description = String::from("label alone without colon might be in error");
+        let line_number = location.line();
+        let column = location.column();
+        let lines = vec![NotificationLine::MainLine { style: warning_style(), location: location.locate(), note: None }];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
+    pub fn warning_ignored_size_specifier<L>(location: L) -> Self where
+        L: Locate {
+        let kind = NotificationKind::Warning;
+        let description = String::from("ignored size specifier");
+        let line_number = location.line();
+        let column = location.column();
+        let lines = vec![NotificationLine::MainLine { style: warning_style(), location: location.locate(), note: None }];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
+    pub fn warning_unnecessary_size_specifier<L>(location: L) -> Self where
+        L: Locate {
+        let kind = NotificationKind::Warning;
+        let description = String::from("unnecessary size specifier");
+        let line_number = location.line();
+        let column = location.column();
+        let lines = vec![NotificationLine::MainLine { style: warning_style(), location: location.locate(), note: None }];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
     }
 
     pub fn line_number(&self) -> usize {

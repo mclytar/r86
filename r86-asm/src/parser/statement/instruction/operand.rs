@@ -5,7 +5,8 @@ use crate::result::prelude::*;
 use crate::lexer::prelude::*;
 use crate::parser::statement::label::Label;
 use crate::parser::statement::literal::IntegerLiteral;
-use crate::parser::statement::expression::{Expression, ExpressionTree};
+use crate::parser::statement::expression::Expression;
+use crate::compiler::binary::UnsolvedBinary;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SizeConstraint {
@@ -59,17 +60,41 @@ impl Operand {
             let _last = capture.last().class() == TokenClass::EndOfLine;
             let location = capture.locate();
             return Err(Notification::error_unimplemented(location));
-        } else if let Some(capture) = token_stream.capture(syntax_rule![ (Byte | Word) IntegerLiteral { EndOfLine | Comma } ]) {
-            let _last = capture.last().class() == TokenClass::EndOfLine;
+        } else if let Some(capture) = token_stream.capture(syntax_rule![ { Byte | Word } { IntegerLiteral } { EndOfLine | Comma } ]) {
+            let last = capture.last().class() == TokenClass::EndOfLine;
             let location = capture.locate();
-            return Err(Notification::error_unimplemented(location));
-        } else if let Some(capture) = token_stream.capture(syntax_rule![ (Byte | Word) Operator IntegerLiteral { EndOfLine | Comma } ]) {
+            let size = match capture[0].class() {
+                TokenClass::Byte => Some(SizeConstraint::Byte),
+                TokenClass::Word => Some(SizeConstraint::Word),
+                _ => unreachable!()
+            };
+            let kind =  OperandKind::Expression(Expression::from_number(location, IntegerLiteral::expect_at(token_stream, &capture[1])?, capture.last().class()));
+            Ok(Some(Operand { location, size, kind, last }))
+        } else if let Some(capture) = token_stream.capture(syntax_rule![ { Byte | Word } Operator IntegerLiteral { EndOfLine | Comma } ]) {
             let _last = capture.last().class() == TokenClass::EndOfLine;
             let location = capture.locate();
             return Err(Notification::error_unimplemented(location))
-        } else if let Some(capture) = token_stream.capture(syntax_rule![LeftSquareParen]) {
-            let location = capture.locate();
-            return Err(Notification::error_unimplemented(location))
+        } else if let Some(capture) = token_stream.capture(syntax_rule![ { [ Byte | Word ] } LeftSquareParen]) {
+            let mut location = capture.locate();
+            let size = if capture.count() > 0 {
+                match capture[0].class() {
+                    TokenClass::Byte => Some(SizeConstraint::Byte),
+                    TokenClass::Word => Some(SizeConstraint::Word),
+                    _ => unreachable!()
+                }
+            } else { None };
+            let segment_override = if let Some(capture) = token_stream.capture(syntax_rule![ { RegSegment } Colon ]) {
+                Some(RegSegment::parse(&token_stream[capture[0].locate()]) as u8)
+            } else { None };
+            let expression = Expression::expect(token_stream)?;
+            if expression.last_token_class() != TokenClass::RightSquareParen {
+                return Err(Notification::error_parser_expected_found(&token_stream[-1], "`]`", &token_stream[token_stream[-1].locate()]))
+            }
+            location |= token_stream[-1].locate();
+            let capture = token_stream.expect(syntax_rule![ { EndOfLine | Comma }])?;
+            let last = capture[0].class() == TokenClass::EndOfLine;
+            let kind = OperandKind::Address(segment_override, expression);
+            Ok(Some(Operand { location, size, kind, last }))
         } else {
             let expression = Expression::expect(token_stream)?;
             let size = None;
@@ -88,6 +113,17 @@ impl Operand {
 
     pub fn size(&self) -> Option<SizeConstraint> {
         self.size
+    }
+
+    pub fn check_references(&self, binary: &UnsolvedBinary) {
+        match &self.kind {
+            OperandKind::SegmentOf(label) => if binary.locate_name(label.as_str()).is_none() {
+                binary.err(Notification::error_undefined_symbol(&label, &label));
+            },
+            OperandKind::Expression(expr) => expr.check_references(binary),
+            OperandKind::Address(_, expr) => expr.check_references(binary),
+            _ => {}
+        }
     }
 }
 impl Locate for Operand {
