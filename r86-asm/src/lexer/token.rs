@@ -172,10 +172,10 @@ impl Token {
                         TokenClass::Reg16
                     } else if REG_SEGMENT.iter().any(|s| *s == token) {
                         TokenClass::RegSegment
-                    } else if INSTRUCTION.iter().any(|s| *s == token) {
-                        TokenClass::Instruction
                     } else if PREFIX_INSTRUCTION.iter().any(|s| *s == token) {
                         TokenClass::PrefixInstruction
+                    } else if INSTRUCTION.iter().any(|s| *s == token) {
+                        TokenClass::Instruction
                     } else if PSEUDO_INSTRUCTION.iter().any(|s| *s == token) {
                         TokenClass::PseudoInstruction
                     } else {

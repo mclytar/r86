@@ -1,27 +1,43 @@
-section         .text
-value_1:                        db      0x20
-value_2:                        dw      0x1234
+_start:
+                                cli
 
-                                mov     ax, cx
-                                mov     ah, al
-                                mov     [0x1234], bx
-                                mov     [value_1], bl
-                                mov     ax, [bx + si]
-                                mov     [bx + si + $ - $$], cx
-                                mov     si, 0x7C00
-                                mov     di, value_2 - value_1
-                                mov     di, value_4 - value_3
-                                mov     al, value_2 - value_1
-                                mov     al, value_4 - value_3
-                                mov     [bx], BYTE 0
-                                mov     WORD [bx], 420
-                                mov     ax, [si]
-                                mov     [di], al
-                                mov     es, dx
-                                mov     es, [bp]
-                                mov     ax, es
-                                mov     [bp + di], es
+                                ; RAM test
+                                xor     ax, ax
+                                mov     ds, ax
+                                mov     es, ax
+                                mov     si, ax
+                                mov     di, ax
+                                mov     ax, 0x5555
+                                mov     bx, 0xAAAA
+    ram_test:
+                                xor     cx, cx
+                                shr     cx, 1
+                                rep     stosw
+                                xor     cx, cx
+                                shr     cx, 1
+                                mov     dx, ax
+        .check_5:               lodsw
+                                test    dx, ax
+                                jnz     .error
+                                loop    .check_5
+                                mov     ax, bx
+                                xor     cx, cx
+                                shr     cx, 1
+                                rep     stosw
+                                xor     cx, cx
+                                shr     cx, 1
+                                mov     dx, ax
+        .check_A:               lodsw
+                                test    dx, ax
+                                jnz     .error
+                                loop    .check_A
+                                jmp     finish
+        .error:                 mov     al, 0x01
+                                out     0xFE, al
+                                hlt
+    finish:
+                                mov     al, 0x02
+                                out     0xFE, al
+                                hlt
 
-
-value_3:                        db      0x20
-value_4:                        dw      0x1234
+TIMES   65520 - ($ - $$)        nop

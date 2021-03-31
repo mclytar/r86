@@ -94,11 +94,18 @@ impl OpCode {
                 expect_operands!(location; operands, 2);
                 return Err(Notification::error_unimplemented(location));
             },
-            "in" => {
-                return Err(Notification::error_unimplemented(location));
-            },
-            "out" => {
-                return Err(Notification::error_unimplemented(location));
+            "in" | "out" => {
+                expect_operands!(location; operands, 1..3);
+                let direction = &name[..] == "out";
+                match_operands!(binary, payload, location, operands;
+                    ( [word] Imm(expr) <- Acc ) => {
+                        payload.push(byte!(0b1110_0100, w = word, d = direction));
+                        push_operand!(binary, operands[0], unsolved_ops, payload; [false] expr);
+                    },
+                    ( [word] DX <- Acc ) => {
+                        payload.push(byte!(0b1110_1100, w = word, d = direction));
+                    }
+                );
             },
             "xlat" => {
                 return Err(Notification::error_unimplemented(location));
@@ -163,6 +170,35 @@ impl OpCode {
                     },
                     ( [word] Reg(reg) <dir> Mem(segment, address) ) => {
                         payload.push(byte!(0b0000_0000, w = word) | (alu_opcode << 3));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                    }
+                );
+            },
+            "test" => {
+                expect_operands!(location; operands, 2);
+                match_operands!(binary, payload, location, operands;
+                    ( [word] Acc <- Imm(expr) ) => {
+                        payload.push(byte!(0b1010_1000, w = word));
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);
+                    },
+                    ( [_word] Reg(_reg) <- Imm(expr) ) => {
+                        /*payload.push(byte!(0b1111_0110, w = word, s = true));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
+                        return Err(Notification::error_unimplemented(location));
+                    },
+                    ( [_word] Mem(segment, _address) <- Imm(expr) ) => {
+                        /*payload.push(byte!(0b1111_0110, w = word, s = true));
+                        push_modrm!(binary, operands, unsolved_ops, payload; [word] alu_opcode <dir> address);
+                        push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
+                        return Err(Notification::error_unimplemented(location));
+                    },
+                    ( [word] Reg(reg1) <- Reg(reg2) ) => {
+                        payload.push(byte!(0b1000_0100, w = word));
+                        payload.push(0b11_000_000 | (*reg2 << 3) | *reg1);
+                    },
+                    ( [word] Reg(reg) <dir> Mem(segment, address) ) => {
+                        payload.push(byte!(0b1000_0100, w = word));
                         push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
                     }
                 );
@@ -296,32 +332,76 @@ impl OpCode {
                     }
                 );
             },
-            "loop" => {
+            "je" | "jz" | "jl" | "jnge" | "jle" | "jng" | "jb" | "jnae" | "jbe" | "jna" | "jp" | "jpe" | "jo" | "js" | "jne"
+            | "jnz" | "jnl" | "jge" | "jnle" | "jg" | "jnb" | "jae" | "jnbe" | "ja" | "jnp" | "jpo" | "jno" | "jns" | "jcxz"
+            | "loop" | "loopz" | "loope" | "loopnz" | "loopne"
+            => {
                 expect_operands!(location; operands, 1);
+                let jump_code = match &name[..] {
+                    "jo"                => 0x70,
+                    "jno"               => 0x71,
+                    "jb" | "jnae"       => 0x72,
+                    "jnb" | "jae"       => 0x73,
+                    "je" | "jz"         => 0x74,
+                    "jne" | "jnz"       => 0x75,
+                    "jbe" | "jna"       => 0x76,
+                    "jnbe" | "ja"       => 0x77,
+                    "js"                => 0x78,
+                    "jns"               => 0x79,
+                    "jp" | "jpe"        => 0x7A,
+                    "jnp" | "jpo"       => 0x7B,
+                    "jl" | "jnge"       => 0x7C,
+                    "jnl" | "jge"       => 0x7D,
+                    "jle" | "jng"       => 0x7E,
+                    "jnle" | "jg"       => 0x7F,
+                    "jcxz"              => 0xE3,
+                    "loop"              => 0xE2,
+                    "loopz" | "loope"   => 0xE1,
+                    "loopnz" | "loopne" => 0xE0,
+                    _ => unreachable!()
+                };
                 match_operands!(binary, payload, location, operands;
                     ( Imm(expr) ) => {
-                        if let (Some(section), Some(value)) = expr.try_eval_offset(binary)? {
-                            if section == binary.current_section().name() {
-                                let (word, offset) = resize!(2 + value - (binary.offset() as i32 + payload.len() as i32));
-                                if word {
-                                    return Err(Notification::error_invalid_set_of_operands(location, &operands));
-                                } else {
-                                    payload.push(0b1110_0010);
-                                    payload.push(offset as u8);
-                                }
-                            } else {
-                                return Err(Notification::error_invalid_set_of_operands(location, &operands));
-                            }
-                        } else {
-                            payload.push(0b1110_1001);
-                            unsolved_ops.push(UnsolvedOperand::new_u8(&mut payload, operands[0].to_owned()));
-                        }
+                        payload.push(jump_code);
+                        push_operand!(binary, operands[0], unsolved_ops, payload; [false] expr);
                     }
                 );
-            }
+            },
             // --------------------------------
             // Processor transfer.
             // --------------------------------
+            "clc" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0xF8);
+            },
+            "cmc" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0xF5);
+            },
+            "stc" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0xF9);
+            },
+            "cld" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0xFC);
+            },
+            "cli" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0xFA);
+            },
+            "sti" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0xFB);
+            },
+            "hlt" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0xF4);
+            },
+            "wait" => {
+                expect_operands!(location; operands, 0);
+                payload.push(0x9B);
+            },
             "nop" => {
                 expect_operands!(location; operands, 0);
                 payload.push(0x90);

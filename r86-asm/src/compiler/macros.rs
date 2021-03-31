@@ -112,6 +112,25 @@ macro_rules! match_operands {
             } else { None }
         } else { None }
     };
+    (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [$word:ident] Imm($expr:ident) <- Acc => $code:block) => {
+        if let Some((OperandKind::Expression($expr), OperandKind::Reg(0))) = match_operands!(@operands($location): 2 $operands) {
+            if $expr.effective_address().is_none() {
+                let $word = $operands[1].size().unwrap() == SizeConstraint::Word;
+                Some($code)
+            } else {
+                return Err(Notification::error_invalid_expression(&$expr));
+            }
+        } else { None }
+    };
+    (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [$word:ident] DX <- Acc => $code:block) => {
+        if let Some((OperandKind::Reg(2), OperandKind::Reg(0))) = match_operands!(@operands($location): 2 $operands) {
+            if $operands[0].size().unwrap() == SizeConstraint::Byte {
+                return Err(Notification::error_invalid_set_of_operands($location, &$operands[..]));
+            }
+            let $word = $operands[1].size().unwrap() == SizeConstraint::Word;
+            Some($code)
+        } else { None }
+    };
     (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [$word:ident] Acc <- Imm($expr:ident) => $code:block) => {
         if let Some((OperandKind::Reg(0), OperandKind::Expression($expr))) = match_operands!(@operands($location): 2 $operands) {
             if $expr.effective_address().is_none() {

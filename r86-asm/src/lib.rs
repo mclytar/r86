@@ -51,6 +51,7 @@ macro_rules! try_token {
 pub mod compiler;
 pub mod context;
 pub mod lexer;
+pub mod linker;
 pub mod parser;
 pub mod result;
 //pub mod text;
