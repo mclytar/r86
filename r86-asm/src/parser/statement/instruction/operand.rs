@@ -6,7 +6,7 @@ use crate::lexer::prelude::*;
 use crate::parser::statement::label::Label;
 use crate::parser::statement::literal::IntegerLiteral;
 use crate::parser::statement::expression::Expression;
-use crate::compiler::binary::UnsolvedBinary;
+use crate::compiler::binary::BinaryModule;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SizeConstraint {
@@ -115,7 +115,7 @@ impl Operand {
         self.size
     }
 
-    pub fn check_references(&self, binary: &UnsolvedBinary) {
+    pub fn check_references(&self, binary: &BinaryModule) {
         match &self.kind {
             OperandKind::SegmentOf(label) => if binary.locate_name(label.as_str()).is_none() {
                 binary.err(Notification::error_undefined_symbol(&label, &label));

@@ -7,5 +7,5 @@ pub mod binary;
 pub mod vars;
 
 pub mod prelude {
-    pub use super::binary::UnsolvedBinary;
+    pub use super::binary::BinaryModule;
 }

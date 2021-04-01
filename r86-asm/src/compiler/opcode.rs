@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use crate::parser::prelude::*;
 use crate::result::prelude::*;
 use super::operand::UnsolvedOperand;
-use super::binary::UnsolvedBinary;
+use super::binary::BinaryModule;
 
 #[derive(Clone, Debug)]
 pub struct OpCode {
@@ -14,7 +14,7 @@ pub struct OpCode {
     unsolved_ops: RefCell<Vec<UnsolvedOperand>>
 }
 impl OpCode {
-    pub fn from_instr(binary: &mut UnsolvedBinary, instr: Instruction) -> CompilerResult<Self> {
+    pub fn from_instr(binary: &mut BinaryModule, instr: Instruction) -> CompilerResult<Self> {
         let location = instr.locate();
 
         let repetitions = if let Some(quantifier) = instr.quantifier() {
@@ -64,12 +64,12 @@ impl OpCode {
                     },
                     ( [word] Reg(reg) <dir> Mem(segment, address) ) => {
                         payload.push(byte!(0b1000_1000, w = word, d = dir));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; reg <dir> address);
                     },
                     ( [word] Mem(segment, address) <- Imm(value) ) => {
                         payload.push(byte!(0b1100_0110, w = word));
-                        let reg = 0; let dir = true;
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        let opc = 0;
+                        push_modrm!(binary, operands, unsolved_ops, payload; opc -> address);
                         push_operand!(binary, operands[1], unsolved_ops, payload; [word] value);
                     },
                     ( SegReg(seg_reg) <dir> Reg(reg) ) => {
@@ -78,37 +78,85 @@ impl OpCode {
                     },
                     ( SegReg(seg_reg) <dir> Mem(segment, address) ) => {
                         payload.push(byte!(0b1000_1100, d = dir));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] seg_reg <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; seg_reg <dir> address);
                     }
                 );
             },
             "push" => {
                 expect_operands!(location; operands, 1);
-                return Err(Notification::error_unimplemented(location));
+                match_operands!(binary, payload, location, operands;
+                    ( [true] Reg(reg) ) => {
+                        payload.push(byte!(0b0101_0000, reg = reg));
+                    },
+                    ( [true] SegReg(reg) ) => {
+                        payload.push(byte!(0b00_000_110, regh = reg));
+                    },
+                    ( Mem(_segment, address) ) => {
+                        payload.push(0b1111_1111);
+                        let opc = 0b110;
+                        push_modrm!(binary, operands, unsolved_ops, payload; opc <- address);
+                    }
+                );
             },
             "pop" => {
                 expect_operands!(location; operands, 1);
-                return Err(Notification::error_unimplemented(location));
+                match_operands!(binary, payload, location, operands;
+                    ( [true] Reg(reg) ) => {
+                        payload.push(byte!(0b0101_1000, reg = reg));
+                    },
+                    ( [true] SegReg(reg) ) => {
+                        payload.push(byte!(0b00_000_111, regh = reg));
+                    },
+                    ( Mem(_segment, address) ) => {
+                        payload.push(0b1000_1111);
+                        let opc = 0b000;
+                        push_modrm!(binary, operands, unsolved_ops, payload; opc <- address);
+                    }
+                );
             },
             "xchg" => {
                 expect_operands!(location; operands, 2);
-                return Err(Notification::error_unimplemented(location));
+                match_operands!(binary, payload, location, operands;
+                    ( AX <_dir> Reg(reg) ) => {
+                        payload.push(byte!(0b1001_0000, reg = reg));
+                    },
+                    ( [word] Reg(reg1) <- Reg(reg2) ) => {
+                        payload.push(byte!(0b1000_0110, w = word));
+                        payload.push(byte!(0b11_000_000, regh = reg2, reg = reg1));
+                    },
+                    ( [word] Reg(reg) <dir> Mem(segment, address)) => {
+                        payload.push(byte!(0b1000_0110, w = word));
+                        push_modrm!(binary, operands, unsolved_ops, payload; reg <dir> address);
+                    }
+                );
             },
-            "in" | "out" => {
+            "in" => {
                 expect_operands!(location; operands, 1..3);
-                let direction = &name[..] == "out";
+                match_operands!(binary, payload, location, operands;
+                    ( [word] Acc <- Imm(expr) ) => {
+                        payload.push(byte!(0b1110_0100, w = word));
+                        push_operand!(binary, operands[0], unsolved_ops, payload; [false] expr);
+                    },
+                    ( [word] Acc <- DX ) => {
+                        payload.push(byte!(0b1110_1100, w = word));
+                    }
+                );
+            },
+            "out" => {
+                expect_operands!(location; operands, 1..3);
                 match_operands!(binary, payload, location, operands;
                     ( [word] Imm(expr) <- Acc ) => {
-                        payload.push(byte!(0b1110_0100, w = word, d = direction));
+                        payload.push(byte!(0b1110_0110, w = word));
                         push_operand!(binary, operands[0], unsolved_ops, payload; [false] expr);
                     },
                     ( [word] DX <- Acc ) => {
-                        payload.push(byte!(0b1110_1100, w = word, d = direction));
+                        payload.push(byte!(0b1110_1110, w = word));
                     }
                 );
             },
             "xlat" => {
-                return Err(Notification::error_unimplemented(location));
+                expect_operands!(location; operands, 0);
+                payload.push(0b1101_0111);
             },
             "lea" => {
                 return Err(Notification::error_unimplemented(location));
@@ -120,16 +168,20 @@ impl OpCode {
                 return Err(Notification::error_unimplemented(location));
             },
             "lahf" => {
-                return Err(Notification::error_unimplemented(location));
+                expect_operands!(location; operands, 0);
+                payload.push(0b1001_1111);
             },
             "sahf" => {
-                return Err(Notification::error_unimplemented(location));
+                expect_operands!(location; operands, 0);
+                payload.push(0b1001_1110);
             }
             "pushf" => {
-                return Err(Notification::error_unimplemented(location));
+                expect_operands!(location; operands, 0);
+                payload.push(0b1001_1100);
             },
             "popf" => {
-                return Err(Notification::error_unimplemented(location));
+                expect_operands!(location; operands, 0);
+                payload.push(0b1001_1101);
             },
             // --------------------------------
             // 2-operands arithmetic and logic.
@@ -154,13 +206,13 @@ impl OpCode {
                     },
                     ( [_word] Reg(_reg) <- Imm(expr) ) => {
                         /*payload.push(byte!(0b1000_0000, w = word, s = true));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; reg <dir> address);
                         push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
                         return Err(Notification::error_unimplemented(location));
                     },
                     ( [_word] Mem(segment, _address) <- Imm(expr) ) => {
                         /*payload.push(byte!(0b1000_0000, w = word, s = true));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] alu_opcode <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; alu_opcode <dir> address);
                         push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
                         return Err(Notification::error_unimplemented(location));
                     },
@@ -170,7 +222,7 @@ impl OpCode {
                     },
                     ( [word] Reg(reg) <dir> Mem(segment, address) ) => {
                         payload.push(byte!(0b0000_0000, w = word) | (alu_opcode << 3));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; reg <dir> address);
                     }
                 );
             },
@@ -183,13 +235,13 @@ impl OpCode {
                     },
                     ( [_word] Reg(_reg) <- Imm(expr) ) => {
                         /*payload.push(byte!(0b1111_0110, w = word, s = true));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; reg <dir> address);
                         push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
                         return Err(Notification::error_unimplemented(location));
                     },
                     ( [_word] Mem(segment, _address) <- Imm(expr) ) => {
                         /*payload.push(byte!(0b1111_0110, w = word, s = true));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] alu_opcode <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; alu_opcode <dir> address);
                         push_operand!(binary, operands[1], unsolved_ops, payload; [word] expr);*/
                         return Err(Notification::error_unimplemented(location));
                     },
@@ -199,7 +251,7 @@ impl OpCode {
                     },
                     ( [word] Reg(reg) <dir> Mem(segment, address) ) => {
                         payload.push(byte!(0b1000_0100, w = word));
-                        push_modrm!(binary, operands, unsolved_ops, payload; [word] reg <dir> address);
+                        push_modrm!(binary, operands, unsolved_ops, payload; reg <dir> address);
                     }
                 );
             },
@@ -232,7 +284,7 @@ impl OpCode {
                             for _ in 0..value {
                                 payload.push(byte!(0b1101_0000, v = false, w = word));
                                 let dir = false;
-                                push_modrm!(binary, operands, unsolved_ops, payload; [word] alu_opcode <dir> address);
+                                push_modrm!(binary, operands, unsolved_ops, payload; alu_opcode <dir> address);
                             }
                         } else {
                             return Err(Notification::error_critical_expression_evaluation(expr));
@@ -485,13 +537,13 @@ impl OpCode {
         self.payload.borrow()
     }
 
-    pub fn check_references(&self, binary: &UnsolvedBinary) {
+    pub fn check_references(&self, binary: &BinaryModule) {
         for op in self.unsolved_ops.borrow().iter() {
             op.check_references(binary);
         }
     }
 
-    pub fn solve_references(&self, binary: &UnsolvedBinary, section: Option<&String>) {
+    pub fn solve_references(&self, binary: &BinaryModule, section: Option<&String>) {
         let mut solved = Vec::new();
         for (id, op) in self.unsolved_ops.borrow_mut().iter_mut().enumerate() {
             if let Some(mut solution) = op.try_solve(binary, section) {

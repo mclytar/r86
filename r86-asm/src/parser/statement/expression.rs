@@ -8,7 +8,7 @@ use crate::result::prelude::*;
 use crate::lexer::prelude::*;
 use crate::parser::statement::label::Label;
 use crate::parser::statement::literal::IntegerLiteral;
-use crate::compiler::binary::UnsolvedBinary;
+use crate::compiler::binary::BinaryModule;
 
 #[derive(Debug)]
 struct ExpressionEval {
@@ -20,7 +20,7 @@ impl ExpressionEval {
         ExpressionEval { scalar, sections: HashMap::new() }
     }
 
-    pub fn from_variable(binary: &UnsolvedBinary, var: &Label) -> Option<ExpressionEval> {
+    pub fn from_variable(binary: &BinaryModule, var: &Label) -> Option<ExpressionEval> {
         let mut sections = HashMap::new();
         for section in binary.sections() {
             for label in section.vars() {
@@ -33,7 +33,7 @@ impl ExpressionEval {
         None
     }
 
-    pub fn from_instruction_start(binary: &UnsolvedBinary) -> ExpressionEval {
+    pub fn from_instruction_start(binary: &BinaryModule) -> ExpressionEval {
         let section = binary.current_section().name();
         let scalar = binary.offset() as i32;
         let mut sections = HashMap::new();
@@ -41,7 +41,7 @@ impl ExpressionEval {
         ExpressionEval { scalar, sections }
     }
 
-    pub fn from_section_start(binary: &UnsolvedBinary) -> ExpressionEval {
+    pub fn from_section_start(binary: &BinaryModule) -> ExpressionEval {
         let section = binary.current_section().name();
         let mut sections = HashMap::new();
         sections.insert(section, 1);
@@ -126,7 +126,7 @@ pub enum ExpressionTree {
     OperationDiv(Box<ExpressionTree>, Box<ExpressionTree>)
 }
 impl ExpressionTree {
-    pub(self) fn try_eval(&self, binary: &UnsolvedBinary) -> CompilerResult<Option<ExpressionEval>> {
+    pub(self) fn try_eval(&self, binary: &BinaryModule) -> CompilerResult<Option<ExpressionEval>> {
         match self {
             ExpressionTree::Number(num) => Ok(Some(ExpressionEval::from_scalar(num.value()))),
             ExpressionTree::Variable(var) => Ok(ExpressionEval::from_variable(binary, var)),
@@ -157,7 +157,7 @@ impl ExpressionTree {
         }
     }
 
-    pub fn check_references(&self, binary: &UnsolvedBinary) {
+    pub fn check_references(&self, binary: &BinaryModule) {
         match &self {
             ExpressionTree::Variable(label) => if binary.locate_name(label.as_str()).is_none() {
                 binary.err(Notification::error_undefined_symbol(&label, &label));
@@ -241,11 +241,11 @@ impl Expression {
         self.ea_calculation
     }
 
-    pub fn eval(&self, _binary: &UnsolvedBinary) -> CompilerResult<i32> {
+    pub fn eval(&self, _binary: &BinaryModule) -> CompilerResult<i32> {
         unimplemented!()
     }
 
-    pub fn try_eval(&self, binary: &UnsolvedBinary) -> CompilerResult<Option<i32>> {
+    pub fn try_eval(&self, binary: &BinaryModule) -> CompilerResult<Option<i32>> {
         if let Some(ref expr_tree) = self.expression_tree {
             if let Some(eval) = expr_tree.try_eval(binary)? {
                 if eval.sections.is_empty() {
@@ -261,7 +261,7 @@ impl Expression {
         }
     }
 
-    pub fn try_eval_offset(&self, binary: &UnsolvedBinary) -> CompilerResult<(Option<Option<String>>, Option<i32>)> {
+    pub fn try_eval_offset(&self, binary: &BinaryModule) -> CompilerResult<(Option<Option<String>>, Option<i32>)> {
         if let Some(ref expr_tree) = self.expression_tree {
             if let Some(eval) = expr_tree.try_eval(binary)? {
                 if eval.sections.is_empty() {
@@ -280,7 +280,7 @@ impl Expression {
         }
     }
 
-    pub fn check_references(&self, binary: &UnsolvedBinary) {
+    pub fn check_references(&self, binary: &BinaryModule) {
         if let Some(expression_tree) = &self.expression_tree {
             expression_tree.check_references(binary)
         }

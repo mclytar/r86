@@ -1,5 +1,5 @@
 use crate::parser::prelude::*;
-use super::binary::UnsolvedBinary;
+use super::binary::BinaryModule;
 
 #[derive(Clone, Debug)]
 pub struct UnsolvedOperand {
@@ -41,11 +41,11 @@ impl UnsolvedOperand {
         self.size
     }
 
-    pub fn check_references(&self, binary: &UnsolvedBinary) {
+    pub fn check_references(&self, binary: &BinaryModule) {
         self.operand.check_references(binary);
     }
 
-    pub fn try_solve(&self, binary: &UnsolvedBinary, section: Option<&String>) -> Option<i32> {
+    pub fn try_solve(&self, binary: &BinaryModule, section: Option<&String>) -> Option<i32> {
         match self.operand.kind() {
             OperandKind::Expression(expr)
             | OperandKind::Address(_, expr)

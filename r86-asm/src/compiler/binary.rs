@@ -9,21 +9,21 @@ use super::section::Section;
 use super::vars::{LinkerDeclaration, LinkerLabel};
 
 #[derive(Debug)]
-pub struct UnsolvedBinary {
-    filename: PathBuf,
-    contents: Rc<String>,
-    log: RefCell<CompilerLog>,
-    pub(self) sections: Vec<Section>,
-    pub(self) global_vars: Vec<LinkerDeclaration>,
-    pub(self) extern_vars: Vec<LinkerDeclaration>,
+pub struct BinaryModule {
+    pub(crate) filename: PathBuf,
+    pub(crate) contents: Rc<String>,
+    pub(crate) log: RefCell<CompilerLog>,
+    pub(crate) sections: Vec<Section>,
+    pub(crate) global_vars: Vec<LinkerDeclaration>,
+    pub(crate) extern_vars: Vec<LinkerDeclaration>,
     pub(self) origin: i32,
     pub(self) offset: i32,
     pub(self) last_label: Option<String>,
     pub(self) current_section: usize
 }
-impl UnsolvedBinary {
+impl BinaryModule {
     pub fn new(filename: PathBuf, contents: Rc<String>, log: CompilerLog) -> Self {
-        UnsolvedBinary {
+        BinaryModule {
             filename,
             contents,
             log: RefCell::new(log),

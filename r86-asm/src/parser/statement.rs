@@ -120,7 +120,7 @@ impl Listing {
         }
     }
 
-    pub fn compile(self) -> Result<UnsolvedBinary, CompilerLog> {
-        UnsolvedBinary::from_listing(self)
+    pub fn compile(self) -> Result<BinaryModule, CompilerLog> {
+        BinaryModule::from_listing(self)
     }
 }

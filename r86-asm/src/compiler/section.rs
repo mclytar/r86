@@ -15,8 +15,8 @@ impl Section {
     }
 
     pub fn new<S>(name: S) -> Self where
-        S: AsRef<str> {
-        Section { location: Location::new(0, 0, 0, 0), name: Some(name.as_ref().to_owned()), local_vars: Vec::new(), opcodes: Vec::new() }
+        S: AsRef<str> + Locate {
+        Section { location: name.locate(), name: Some(name.as_ref().to_owned()), local_vars: Vec::new(), opcodes: Vec::new() }
     }
 
     pub fn name(&self) -> Option<String> {

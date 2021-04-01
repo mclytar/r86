@@ -1,8 +1,11 @@
-use r86_asm::result::error::{CompilerLog};
-use console::style;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::time::{Instant};
-use r86_asm::lexer::Assembly;
-use std::io::Read;
+
+use console::style;
+
+use r86_asm::prelude::*;
+use r86_asm::linker::firmware::{FirmwareLinker};
 
 fn get_file_contents() -> Assembly {
     let mut file = std::fs::File::open("example.asm")
@@ -14,13 +17,16 @@ fn get_file_contents() -> Assembly {
     Assembly::new("<anonymous>", &contents)
 }
 
-pub fn compile(assembly: Assembly) -> Result<(), CompilerLog> {
+pub fn compile(assembly: Assembly) -> Result<Binary, CompilerLog> {
     println!("  {} `{}`", style("Assembling").green().bright(), assembly.filename().to_string_lossy());
-    let _listing = assembly.tokenize()?
+    let binary = assembly.tokenize()?
         .parse()?
         .compile()?;
 
-    Ok(())
+    let mut linker = FirmwareLinker::new();
+    linker.link(binary)?;
+
+    Ok(linker.into_binary())
 }
 
 fn main() {
@@ -32,9 +38,13 @@ fn main() {
             error_collection.update();
             println!("{:#}", error_collection)
         },
-        Ok(_) => {
-            /*let mut out_file = File::create("out.bin").unwrap();
-            out_file.write_all(&assembly.to_raw()[..]).unwrap();*/
+        Ok(binary) => {
+            if binary.warnings().is_warn() {
+                println!("{:#}", binary.warnings());
+            }
+
+            let mut out_file = File::create("out.bin").unwrap();
+            out_file.write_all(binary.as_ref()).unwrap();
 
             let end = Instant::now();
             let duration = end - start;

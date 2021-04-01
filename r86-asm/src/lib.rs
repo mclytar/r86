@@ -56,6 +56,12 @@ pub mod parser;
 pub mod result;
 //pub mod text;
 
+pub mod prelude {
+    pub use crate::result::error::CompilerLog;
+    pub use crate::lexer::Assembly;
+    pub use crate::linker::{Linker, Binary};
+}
+
 const REG8: [&str; 8] = ["al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"];
 const REG16: [&str; 8] = ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"];
 const REG_SEGMENT: [&str; 4] = ["es", "cs", "ss", "ds"];

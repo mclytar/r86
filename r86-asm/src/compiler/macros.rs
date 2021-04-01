@@ -53,6 +53,22 @@ macro_rules! match_operands {
             None
         }
     };
+    (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [true] Reg($reg:ident) => $code:block) => {
+        if let Some(OperandKind::Reg($reg)) = match_operands!(@operands($location): 1 $operands) {
+            if $operands[0].size().unwrap() != SizeConstraint::Word {
+                return Err(Notification::error_invalid_set_of_operands($location, &$operands[..]));
+            }
+            Some($code)
+        } else { None }
+    };
+    (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [true] SegReg($seg_reg:ident) => $code:block) => {
+        if let Some(OperandKind::SegmentReg($seg_reg)) = match_operands!(@operands($location): 1 $operands) {
+            if $operands[0].size().unwrap() != SizeConstraint::Word {
+                return Err(Notification::error_invalid_set_of_operands($location, &$operands[..]));
+            }
+            Some($code)
+        } else { None }
+    };
     (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [$word:ident] Reg($reg:ident) => $code:block) => {
         if let Some(OperandKind::Reg($reg)) = match_operands!(@operands($location): 1 $operands) {
             let $word = $operands[0].size().unwrap() == SizeConstraint::Word;
@@ -60,7 +76,7 @@ macro_rules! match_operands {
         } else { None }
     };
     (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [$word:ident] SegReg($seg_reg:ident) => $code:block) => {
-        if let Some(OperandKind::Reg($seg_reg)) = match_operands!(@operands($location): 1 $operands) {
+        if let Some(OperandKind::SegmentReg($seg_reg)) = match_operands!(@operands($location): 1 $operands) {
             let $word = true;
             Some($code)
         } else { None }
@@ -112,6 +128,19 @@ macro_rules! match_operands {
             } else { None }
         } else { None }
     };
+    (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): AX <$dir:ident> Reg($reg:ident) => $code:block) => {
+        if let Some((OperandKind::Reg(0), OperandKind::Reg($reg))) = match_operands!(@operands($location): 2 $operands) {
+            if $operands[0].size().unwrap() == SizeConstraint::Word {
+                let $dir = false;
+                Some($code)
+            } else { None }
+        } else if let Some((OperandKind::Reg($reg), OperandKind::Reg(0))) = match_operands!(@operands($location): 2 $operands) {
+            if $operands[1].size().unwrap() == SizeConstraint::Word {
+                let $dir = false;
+                Some($code)
+            } else { None }
+        } else { None }
+    };
     (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [$word:ident] Imm($expr:ident) <- Acc => $code:block) => {
         if let Some((OperandKind::Expression($expr), OperandKind::Reg(0))) = match_operands!(@operands($location): 2 $operands) {
             if $expr.effective_address().is_none() {
@@ -128,6 +157,15 @@ macro_rules! match_operands {
                 return Err(Notification::error_invalid_set_of_operands($location, &$operands[..]));
             }
             let $word = $operands[1].size().unwrap() == SizeConstraint::Word;
+            Some($code)
+        } else { None }
+    };
+    (@if_let($binary:expr, $payload:expr, $location:expr, $operands:expr): [$word:ident] Acc <- DX => $code:block) => {
+        if let Some((OperandKind::Reg(0), OperandKind::Reg(2))) = match_operands!(@operands($location): 2 $operands) {
+            if $operands[1].size().unwrap() == SizeConstraint::Byte {
+                return Err(Notification::error_invalid_set_of_operands($location, &$operands[..]));
+            }
+            let $word = $operands[0].size().unwrap() == SizeConstraint::Word;
             Some($code)
         } else { None }
     };
@@ -224,7 +262,57 @@ macro_rules! match_operands {
 
 
 macro_rules! push_modrm {
-    ($binary:expr, $operands:expr, $unsolved_ops:expr, $payload:expr; [$word:ident] $reg:ident <$dir:ident> $address:ident) => {
+    ($binary:expr, $operands:expr, $unsolved_ops:expr, $payload:expr; $reg:ident <- $address:ident) => {
+        if let (_, Some(offset)) = $address.try_eval_offset($binary)? {
+            if let Some(ea) = $address.effective_address() {
+                if offset == 0 && ea as u8 != 6 { $payload.push(byte!(0b00_000_000, regh = $reg, reg = ea as u8)); }
+                else if offset < 0x80 || offset >= 0xFF80 {
+                    $payload.push(byte!(0b01_000_000, regh = $reg, reg = ea as u8));
+                    $payload.push(offset as u8);
+                } else {
+                    $payload.push(byte!(0b10_000_000, regh = $reg, reg = ea as u8));
+                    push_word!($payload, offset);
+                }
+            } else {
+                $payload.push(byte!(0b00_000_000, regh = $reg, reg = 6));
+                push_word!($payload, offset);
+            }
+        } else {
+            if let Some(ea) = $address.effective_address() {
+                $payload.push(byte!(0b10_000_000, regh = $reg, reg = ea as u8));
+            } else {
+                $payload.push(byte!(0b00_000_000, regh = $reg, reg = 6));
+            }
+            let operand = $operands[0].to_owned();
+            $unsolved_ops.push(UnsolvedOperand::new_u16(&mut $payload, operand));
+        }
+    };
+    ($binary:expr, $operands:expr, $unsolved_ops:expr, $payload:expr; $reg:ident -> $address:ident) => {
+        if let (_, Some(offset)) = $address.try_eval_offset($binary)? {
+            if let Some(ea) = $address.effective_address() {
+                if offset == 0 && ea as u8 != 6 { $payload.push(byte!(0b00_000_000, regh = $reg, reg = ea as u8)); }
+                else if offset < 0x80 || offset >= 0xFF80 {
+                    $payload.push(byte!(0b01_000_000, regh = $reg, reg = ea as u8));
+                    $payload.push(offset as u8);
+                } else {
+                    $payload.push(byte!(0b10_000_000, regh = $reg, reg = ea as u8));
+                    push_word!($payload, offset);
+                }
+            } else {
+                $payload.push(byte!(0b00_000_000, regh = $reg, reg = 6));
+                push_word!($payload, offset);
+            }
+        } else {
+            if let Some(ea) = $address.effective_address() {
+                $payload.push(byte!(0b10_000_000, regh = $reg, reg = ea as u8));
+            } else {
+                $payload.push(byte!(0b00_000_000, regh = $reg, reg = 6));
+            }
+            let operand = $operands[1].to_owned();
+            $unsolved_ops.push(UnsolvedOperand::new_u16(&mut $payload, operand));
+        }
+    };
+    ($binary:expr, $operands:expr, $unsolved_ops:expr, $payload:expr; $reg:ident <$dir:ident> $address:ident) => {
         if let (_, Some(offset)) = $address.try_eval_offset($binary)? {
             if let Some(ea) = $address.effective_address() {
                 if offset == 0 && ea as u8 != 6 { $payload.push(byte!(0b00_000_000, regh = $reg, reg = ea as u8)); }
@@ -248,7 +336,7 @@ macro_rules! push_modrm {
             let operand = if $dir { $operands[1].to_owned() } else { $operands[0].to_owned() };
             $unsolved_ops.push(UnsolvedOperand::new_u16(&mut $payload, operand));
         }
-    }
+    };
 }
 
 

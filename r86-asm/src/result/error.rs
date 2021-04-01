@@ -504,6 +504,59 @@ impl Notification {
         unimplemented!()
     }
 
+    pub fn error_linker_no_sections_allowed<S, L>(target: S, location: L) -> Self where
+        S: AsRef<str>,
+        L: Locate {
+        let kind = NotificationKind::Error;
+        let description = format!("sections are not allowed when compiling for target `{}`", target.as_ref());
+        let line_number = location.line();
+        let column = 1;
+        let mut location = location.locate();
+        location.set_start(1 + location.start() - location.column());
+        location.set_column(1);
+        let lines = vec![
+            NotificationLine::MainLine { style: error_style(), location: location.locate(), note: None }
+        ];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
+    pub fn error_linker_undefined_reference<S, L>(name: S, location: L) -> Self where
+        S: AsRef<str>,
+        L: Locate {
+        let kind = NotificationKind::Error;
+        let description = format!("undefined reference to `{}`", name.as_ref());
+        let line_number = location.line();
+        let column = location.column();
+        let lines = vec![
+            NotificationLine::MainLine { style: error_style(), location: location.locate(), note: None }
+        ];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
+    pub fn error_linker_binary_too_big(expected: usize, found: usize) -> Self {
+        let kind = NotificationKind::Error;
+        let description = format!("assembly should produce a binary of at most {} bytes, but produces a binary of {} bytes", expected, found);
+        let line_number = 0;
+        let column = 0;
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines: Vec::new() }
+    }
+
+    pub fn error_linker_no_start() -> Self {
+        let kind = NotificationKind::Error;
+        let description = format!("no entry point given");
+        let line_number = 0;
+        let column = 0;
+
+        let lines = vec![
+            NotificationLine::Footnote { contents: format!("{}: {}", help_style().apply_to("help"), white_style().apply_to("the entry point label `_start` is missing"))}
+        ];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
     pub fn warning_label_alone_without_colon<L>(location: L) -> Self where
         L: Locate {
         let kind = NotificationKind::Warning;
@@ -533,6 +586,20 @@ impl Notification {
         let line_number = location.line();
         let column = location.column();
         let lines = vec![NotificationLine::MainLine { style: warning_style(), location: location.locate(), note: None }];
+
+        Notification { kind, description, line_number, column, filename: None, text: None, lines }
+    }
+
+    pub fn warning_unnecessary_global<S, L>(name: S, location: L) -> Self where
+        S: AsRef<str>,
+        L: Locate {
+        let kind = NotificationKind::Warning;
+        let description = format!("unused global variable (target: `{}`)", name.as_ref());
+        let line_number = location.line();
+        let column = location.column();
+        let lines = vec![
+            NotificationLine::MainLine { style: warning_style(), location: location.locate(), note: None }
+        ];
 
         Notification { kind, description, line_number, column, filename: None, text: None, lines }
     }
@@ -1217,6 +1284,9 @@ impl CompilerLog {
 
     pub fn is_err(&self) -> bool {
         self.errors.len() > 0
+    }
+    pub fn is_warn(&self) -> bool {
+        self.warnings.len() > 0
     }
 }
 impl Display for CompilerLog {

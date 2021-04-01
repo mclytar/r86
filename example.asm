@@ -11,9 +11,11 @@ _start:
                                 mov     bx, 0xAAAA
     ram_test:
                                 xor     cx, cx
+                                dec     cx
                                 shr     cx, 1
                                 rep     stosw
                                 xor     cx, cx
+                                dec     cx
                                 shr     cx, 1
                                 mov     dx, ax
         .check_5:               lodsw
@@ -22,9 +24,11 @@ _start:
                                 loop    .check_5
                                 mov     ax, bx
                                 xor     cx, cx
+                                dec     cx
                                 shr     cx, 1
                                 rep     stosw
                                 xor     cx, cx
+                                dec     cx
                                 shr     cx, 1
                                 mov     dx, ax
         .check_A:               lodsw
